@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stable-platform-matchings"
+version = "0.1.0"
+description = "Stable platform market optimization and simulation tools"
+requires-python = ">=3.11"
+
+dependencies = [
+    "geopandas",
+    "gurobipy",
+    "matplotlib",
+    "names-generator",
+    "networkx",
+    "numpy",
+    "osmnx",
+    "pandas",
+    "pyproj",
+    "PyYAML",
+    "scipy",
+    "shapely",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # Pyflakes
+    "I",   # import sorting
+    "B",   # flake8-bugbear
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
