@@ -10,6 +10,7 @@ from pyproj import Transformer
 from scipy.interpolate import interp1d
 from scipy.special import gammaln, logsumexp
 from scipy.stats import gaussian_kde
+from typing import cast
 
 from ..graphs.road_graphs import RoadGraph
 
@@ -169,7 +170,7 @@ class InstanceGenerator:
             pdf_values /= n
             # interpolate for efficiency
             lookups[intermediary_id] = interp1d(
-                x_eval, pdf_values, fill_value=(0, 0), bounds_error=False
+                x_eval, pdf_values, fill_value=0.0, bounds_error=False
             )
         return lookups
 
@@ -394,7 +395,8 @@ class InstanceGenerator:
                 -buffer_cycles,
                 n_cycles + buffer_cycles,
             ):
-                nominal_day = row.cycle_phase + cycle_index * cycle_length
+                cycle_phase = cast(int, row.cycle_phase)
+                nominal_day = cycle_phase + cycle_index * cycle_length
 
                 pickups.append(
                     {
@@ -516,15 +518,17 @@ class InstanceGenerator:
             routes = []
 
             for historical_day in historical_days_sorted:
-                route = (
-                    hist_df.loc[
-                        (hist_df["day"] == historical_day)
-                        & (hist_df["intermediary_id"] == intermediary_id),
-                        "farmer_id",
-                    ]
-                    .astype(str)
-                    .tolist()
+                mask = (
+                    (hist_df["day"] == historical_day)
+                    & (hist_df["intermediary_id"] == intermediary_id)
                 )
+
+                farmer_ids_hist = cast(
+                    pd.Series,
+                    hist_df.loc[mask, "farmer_id"],
+                )
+
+                route = farmer_ids_hist.astype(str).tolist()
 
                 # Route IDs must belong to the farmer universe.
                 route = [farmer_id for farmer_id in route if farmer_id in farmer_ids]
