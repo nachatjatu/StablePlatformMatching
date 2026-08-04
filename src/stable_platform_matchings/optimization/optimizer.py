@@ -1,6 +1,5 @@
 import os
 import time
-from copy import deepcopy
 from itertools import combinations
 
 import gurobipy as gp
@@ -29,7 +28,7 @@ def get_solver_threads() -> int:
                 return max(1, int(value))
             except ValueError:
                 pass
-    return 1
+    return 0
 
 
 class Optimizer:
@@ -58,7 +57,6 @@ class Optimizer:
         self,
         instance: Instance,
         parameters: dict,
-        base_matchings: dict[int, Matching] | None = None,
     ) -> None:
         """
         Summary
@@ -80,14 +78,11 @@ class Optimizer:
         self.n_farmers = len(self.instance.farmers)
         self.n_intermediaries = len(self.instance.intermediaries)
 
-        self.pay_unmatched = parameters.get("pay_unmatched", False)
         self.backend = parameters.get("backend", "")
-        self.aggregate = parameters.get("aggregate", False)
+        self.vrp_mode = parameters.get("vrp_mode", "approximate")
 
-        if self.aggregate:
-            self._aggregate_hist_sets()
-        else:
-            self._freeze_hist_sets()
+        self.pay_unmatched = False
+        self.aggregate = False
 
         if self.backend != "gurobi":
             raise ValueError(
@@ -104,19 +99,24 @@ class Optimizer:
             if self.het_costs[intermediary_id] + self.instance.truck_fixed_cost < 0:
                 raise ValueError(f"Het cost for intermediary {intermediary_id} is negative.")
 
+        self._original_hist_sets = {
+            intermediary.id: (
+                tuple(
+                    frozenset(hist_set)
+                    for hist_set in intermediary.hist_sets
+                )
+                or (frozenset(),)
+            )
+            for intermediary in self.instance.intermediaries
+        }
+        self._configure_hist_sets(aggregate=False)
         self.dominance = self._calc_dominance()
 
-        self.base_matchings = (
-            base_matchings if base_matchings is not None else self._initialize_base_matchings()
-        )
+        self.routing_cost_by_truck_count = self._initialize_routing_cost_by_truck_count()
 
-        if not self.base_matchings:
-            raise ValueError("base_matchings cannot be empty.")
+        self.min_trucks = min(self.routing_cost_by_truck_count)
+        self.max_trucks = max(self.routing_cost_by_truck_count)
 
-        self.min_trucks = min(self.base_matchings)
-        self.max_trucks = max(self.base_matchings)
-
-        self.intermediary_set_to_cost = self._initialize_intermediary_set_to_cost()
         self.route_by_farmer_ids_set = {}
 
         self.time_usage = {
@@ -137,6 +137,11 @@ class Optimizer:
 
         self.best_lb_summary: PrimalSolution | None = None
         self.best_lb_set: frozenset[str] | None = None
+
+        initial_set_to_cost = self._initialize_intermediary_set_to_cost()
+
+        self._initial_intermediary_set_to_cost = initial_set_to_cost.copy()
+        self.intermediary_set_to_cost = initial_set_to_cost.copy()
 
     def solve(
         self,
@@ -171,8 +176,24 @@ class Optimizer:
             "structured_farmer_payments": False,
             "domination": False,
             "early_stop": False,
+            "aggregate": False,
+            "pay_unmatched": False,
             **({} if options is None else options),
         }
+
+        if self.options["structured_farmer_payments"]:
+            self._verify_farmer_distances()
+
+        self.aggregate = self.options["aggregate"]
+        self.pay_unmatched = self.options["pay_unmatched"]
+
+        self._configure_hist_sets(self.aggregate)
+        self.dominance = self._calc_dominance()
+
+        self.intermediary_set_to_cost = (
+            self._initial_intermediary_set_to_cost.copy()
+        )
+        self.route_by_farmer_ids_set = {}
 
         # reset solver state
         self.best_lb = -float("inf")
@@ -320,7 +341,7 @@ class Optimizer:
             [
                 (intermediary.id, hist_set_index)
                 for intermediary in self.instance.intermediaries
-                for hist_set_index in range(len(intermediary.hist_sets))
+                for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
             ],
             vtype=gp.GRB.CONTINUOUS,
             lb=-float("inf"),
@@ -358,19 +379,18 @@ class Optimizer:
         # constraint 4: pay intermediaries at most their max. capacity * fruit price = max. value
         if sol_type in ["exact", "forced_lower_bound"]:
             if not self.pay_unmatched:
-                model.addConstrs(
-                    intermediary_profit_vars[intermediary.id]
-                    <= intermediary_matched[intermediary.id]
-                    * intermediary.capacity
-                    * self.instance.fruit_price_per_ton
-                    for intermediary in self.instance.intermediaries
-                )
+                for intermediary in self.instance.intermediaries:
+                    model.addConstr(
+                        intermediary_profit_vars[intermediary.id]
+                        <= intermediary_matched[intermediary.id]
+                        * intermediary.capacity * self.instance.fruit_price_per_ton
+                    )
             else:
-                model.addConstrs(
-                    intermediary_profit_vars[intermediary.id]
-                    <= intermediary.capacity * self.instance.fruit_price_per_ton
-                    for intermediary in self.instance.intermediaries
-                )
+                for intermediary in self.instance.intermediaries:
+                    model.addConstr(
+                        intermediary_profit_vars[intermediary.id]
+                        <= intermediary.capacity * self.instance.fruit_price_per_ton
+                    )
 
         # constraint 5: if applicable, do not pay unmatched intermediaries
         if not self.pay_unmatched:
@@ -397,7 +417,7 @@ class Optimizer:
         for intermediary in self.instance.intermediaries:
             # note that constraint 7 makes kappa equal to max deviation
             #   opportunity from historical set
-            n_hist_sets = len(intermediary.hist_sets)
+            n_hist_sets = len(self.active_hist_sets[intermediary.id])
             avg_deviation_payoff = (
                 1
                 / n_hist_sets
@@ -513,7 +533,7 @@ class Optimizer:
 
             new_rows = 0
             for intermediary in self.instance.intermediaries:
-                for hist_set_index, hist_set in enumerate(intermediary.hist_sets):
+                for hist_set_index, hist_set in enumerate(self.active_hist_sets[intermediary.id]):
                     # construct prize for each farmer, with quantity
                     # outside historical set incurring eta penalty
                     prizes = {}
@@ -769,7 +789,7 @@ class Optimizer:
             [
                 (intermediary.id, hist_set_index, route_set_index)
                 for intermediary in self.instance.intermediaries
-                for hist_set_index in range(len(intermediary.hist_sets))
+                for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
                 for route_set_index in self.route_by_farmer_ids_set
             ],
             vtype=gp.GRB.CONTINUOUS,
@@ -808,32 +828,32 @@ class Optimizer:
 
         # dual constraint 1: corresponds to farmer_payment_vars in primal
         if gamma is not None:
-            model.addConstrs(
-                gamma[farmer.id]
-                - 1
-                + gp.quicksum(
-                    alpha[intermediary.id, hist_set_index, route_set_index]
-                    * (farmer.id in route_set_index)
-                    for intermediary in self.instance.intermediaries
-                    for hist_set_index in range(len(intermediary.hist_sets))
-                    for route_set_index in self.route_by_farmer_ids_set
+            for farmer in self.instance.farmers:
+                model.addConstr(
+                    gamma[farmer.id]
+                    - 1
+                    + gp.quicksum(
+                        alpha[intermediary.id, hist_set_index, route_set_index]
+                        * (farmer.id in route_set_index)
+                        for intermediary in self.instance.intermediaries
+                        for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
+                        for route_set_index in self.route_by_farmer_ids_set
+                    )
+                    <= 0
                 )
-                <= 0
-                for farmer in self.instance.farmers
-            )
         else:
-            model.addConstrs(
-                -1
-                + gp.quicksum(
-                    alpha[intermediary.id, hist_set_index, route_set_index]
-                    * (farmer.id in route_set_index)
-                    for intermediary in self.instance.intermediaries
-                    for hist_set_index in range(len(intermediary.hist_sets))
-                    for route_set_index in self.route_by_farmer_ids_set
+            for farmer in self.instance.farmers:
+                model.addConstr(
+                    -1
+                    + gp.quicksum(
+                        alpha[intermediary.id, hist_set_index, route_set_index]
+                        * (farmer.id in route_set_index)
+                        for intermediary in self.instance.intermediaries
+                        for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
+                        for route_set_index in self.route_by_farmer_ids_set
+                    )
+                    <= 0
                 )
-                <= 0
-                for farmer in self.instance.farmers
-            )
         # dual constraint 2: corresponds to intermediary_profit_vars in primal
         if D is not None:
             self.output.collection("Applied dominance relations", self.dominance)
@@ -857,10 +877,10 @@ class Optimizer:
                     f"domination_constraint_{intermediary.id}",
                 )
         else:
-            model.addConstrs(
-                -1 + mu[intermediary.id] - lamb[intermediary.id] <= 0
-                for intermediary in self.instance.intermediaries
-            )
+            for intermediary in self.instance.intermediaries:
+                model.addConstr(
+                    -1 + mu[intermediary.id] - lamb[intermediary.id] <= 0
+                )
         # dual constraint 3: corresponds to intermediary_set_prob_vars in primal
         model.addConstrs(
             -self.intermediary_set_to_cost[intermediary_set]
@@ -876,32 +896,32 @@ class Optimizer:
             if self._is_valid_intermediary_set(branch, intermediary_set)
         )
         # dual constraint 4: corresponds to eta variable in primal
-        model.addConstrs(
-            -self.parameters["epsilon"][intermediary.id] * mu[intermediary.id]
-            + gp.quicksum(
-                alpha[intermediary.id, hist_set_index, route_set_index]
-                * sum(
-                    farmer.quantity
-                    for farmer in self.route_by_farmer_ids_set[route_set_index].farmers
-                    if farmer.id not in intermediary.hist_sets[hist_set_index]
+        for intermediary in self.instance.intermediaries:
+            model.addConstr(
+                -self.parameters["epsilon"][intermediary.id] * mu[intermediary.id]
+                + gp.quicksum(
+                    alpha[intermediary.id, hist_set_index, route_set_index]
+                    * sum(
+                        farmer.quantity
+                        for farmer in self.route_by_farmer_ids_set[route_set_index].farmers
+                        if farmer.id not in self.active_hist_sets[intermediary.id][hist_set_index]
+                    )
+                    for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
+                    for route_set_index in self.route_by_farmer_ids_set
                 )
-                for hist_set_index in range(len(intermediary.hist_sets))
-                for route_set_index in self.route_by_farmer_ids_set
+                <= 0
             )
-            <= 0
-            for intermediary in self.instance.intermediaries
-        )
         # dual constraint 5: corresponds to kappa variable in primal
-        model.addConstrs(
-            -1 / len(intermediary.hist_sets) * mu[intermediary.id]
-            + gp.quicksum(
-                alpha[intermediary.id, hist_set_index, route_set_index]
-                for route_set_index in self.route_by_farmer_ids_set
-            )
-            == 0
-            for intermediary in self.instance.intermediaries
-            for hist_set_index in range(len(intermediary.hist_sets))
-        )
+        for intermediary in self.instance.intermediaries:
+            for hist_set_index in range(len(self.active_hist_sets[intermediary.id])):
+                model.addConstr(
+                    -1 / len(self.active_hist_sets[intermediary.id]) * mu[intermediary.id]
+                    + gp.quicksum(
+                        alpha[intermediary.id, hist_set_index, route_set_index]
+                        for route_set_index in self.route_by_farmer_ids_set
+                    )
+                    == 0
+                )
         # optional dual constraints corresponding to optional
         #   primal structured farmer payments variables
         if gamma is not None:
@@ -920,8 +940,7 @@ class Optimizer:
             # dual constraint corresponding to paved_distance_penalty variable in primal
             model.addConstr(
                 gp.quicksum(
-                    gamma[farmer.id]
-                    * (farmer.paved_to_mill > self.PAVED_THRESHOLD)
+                    gamma[farmer.id] * (farmer.paved_to_mill > self.PAVED_THRESHOLD)
                     * farmer.quantity
                     for farmer in self.instance.farmers
                 )
@@ -956,7 +975,7 @@ class Optimizer:
                 - fruit_revenue_by_route[route_set_index]
             )
             for intermediary in self.instance.intermediaries
-            for hist_set_index in range(len(intermediary.hist_sets))
+            for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
             for route_set_index, route in self.route_by_farmer_ids_set.items()
         )
 
@@ -1064,7 +1083,7 @@ class Optimizer:
         """
         for intermediary in self.instance.intermediaries:
             # add stability cuts for each historical set to prevent deviations
-            for hist_set_idx, hist_set in enumerate(intermediary.hist_sets):
+            for hist_set_idx, hist_set in enumerate(self.active_hist_sets[intermediary.id]):
                 total_quantity_outside_hist_set = sum(
                     farmer.quantity for farmer in route.farmers if farmer.id not in hist_set
                 )
@@ -1141,7 +1160,7 @@ class Optimizer:
             net_prizes.keys(), key=lambda x: net_prizes[x], reverse=True
         )
         objs = {}
-        for n_trucks in self.base_matchings:
+        for n_trucks in self.routing_cost_by_truck_count:
             n_optional_needed = n_trucks - len_required
 
             if n_optional_needed < 0:
@@ -1157,7 +1176,7 @@ class Optimizer:
             intermediary_set = frozenset(required_intermediaries.union(selected_optional))
 
             objs[intermediary_set] = (
-                prizes_sum + required_prizes_sum - self.base_matchings[n_trucks].cost
+                prizes_sum + required_prizes_sum - self.routing_cost_by_truck_count[n_trucks]
             )
 
         if not objs:
@@ -1167,7 +1186,7 @@ class Optimizer:
         max_intermediary_set = [
             intermediary_set for intermediary_set, obj in objs.items() if obj == max_obj
         ]
-        max_cost = self.base_matchings[len(max_intermediary_set[0])].cost + sum(
+        max_cost = self.routing_cost_by_truck_count[len(max_intermediary_set[0])] + sum(
             self.het_costs[intermediary_id] for intermediary_id in max_intermediary_set[0]
         )
 
@@ -1191,45 +1210,29 @@ class Optimizer:
 
         return True
 
-    def _freeze_hist_sets(self) -> None:
-        """
-        Converts historical sets in intermediary additional_info into frozensets.
-
-        The result is stored back in `intermediary.additional_info['hist_sets']`.
-
-        Returns:
-            None
-        """
-        for intermediary in self.instance.intermediaries:
-            hist_sets = intermediary.hist_sets
-            if not hist_sets:
-                intermediary.hist_sets = [frozenset()]
-            else:
-                intermediary.hist_sets = [frozenset(hist_set) for hist_set in hist_sets]
-
-    def _aggregate_hist_sets(self) -> None:
-        """
-        Constructs a single feasible history set for each intermediary.
-
-        The original history sets may be large; this method reduces them to a
-        single set containing all farmers currently assigned to that
-        intermediary in the instance.  The result is stored back in
-        `intermediary.additional_info['hist_sets']`.
-
-        Returns:
-            None
-        """
-        for intermediary in self.instance.intermediaries:
-            aggregate_hist_set = [
-                frozenset(
-                    [
+    def _configure_hist_sets(
+        self,
+        aggregate: bool,
+    ) -> None:
+        if aggregate:
+            self.active_hist_sets = {
+                intermediary.id: (
+                    frozenset(
                         farmer.id
                         for farmer in self.instance.farmers
-                        if farmer.intermediary_id == intermediary.id
-                    ]
+                        if farmer.intermediary_id
+                        == intermediary.id
+                    ),
                 )
-            ]
-            intermediary.hist_sets = aggregate_hist_set
+                for intermediary
+                in self.instance.intermediaries
+            }
+        else:
+            self.active_hist_sets = {
+                intermediary_id: hist_sets
+                for intermediary_id, hist_sets
+                in self._original_hist_sets.items()
+            }
 
     def _calc_dominance(self) -> list[tuple[str, str]]:
         """Compute pairwise dominance relations between intermediaries.
@@ -1248,7 +1251,7 @@ class Optimizer:
         # precompute historical quantities
         hist_avg_quantities = {}
         for intermediary in self.instance.intermediaries:
-            hist_sets = intermediary.hist_sets
+            hist_sets = self.active_hist_sets[intermediary.id]
 
             hist_quantity = 0
             for hist_set in hist_sets:
@@ -1277,30 +1280,7 @@ class Optimizer:
         self.output.collection("Relations", dominance_relations)
         return dominance_relations
 
-    def _initialize_base_routing_costs(
-        self,
-    ) -> tuple[Matching, dict[int, float]]:
-        min_cost_matching = self.vrp_solver.solve(
-            1,
-            self.n_intermediaries,
-        )
-
-        min_trucks = len(min_cost_matching.routes)
-        max_trucks = min(
-            min_trucks + self.N_MATCHINGS - 1,
-            self.n_intermediaries,
-        )
-
-        routing_cost_by_truck_count = {
-            n_trucks: (
-                min_cost_matching.cost + (n_trucks - min_trucks) * self.instance.truck_fixed_cost
-            )
-            for n_trucks in range(min_trucks, max_trucks + 1)
-        }
-
-        return min_cost_matching, routing_cost_by_truck_count
-
-    def _initialize_base_matchings(self) -> dict[int, Matching]:
+    def _initialize_routing_cost_by_truck_count(self) -> dict[int, float]:
         """Compute an initial set of matchings by solving simple VRPs.
 
         The method solves a sequence of vehicle routing problems with
@@ -1315,44 +1295,37 @@ class Optimizer:
 
         self.output.section("VRP Initialization")
 
-        base_matchings = {}
-
-        # solve for min cost matching
+        # solve for min cost matchin
         min_cost_matching = self.vrp_solver.solve(1, self.n_intermediaries)
-
-        min_cost_n_trucks = len(min_cost_matching.routes)
-        max_n_trucks = self.n_intermediaries
+        min_trucks = len(min_cost_matching.routes)
 
         self.output.metric("Minimum-cost objective", min_cost_matching.cost)
-        self.output.metric("Trucks used", min_cost_n_trucks, precision=0)
+        self.output.metric("Trucks used", min_trucks, precision=0)
 
-        # initialize routing costs for matchings using at least min_cost_n_intermediaries
-        base_matchings[min_cost_n_trucks] = min_cost_matching
+        self.output.subsection(f"Populating matchings using {min_trucks} trucks")
+        self.output.metric("VRP cost", min_cost_matching.cost, precision=0)
+        routing_cost_by_truck_count = {min_trucks: min_cost_matching.cost}
 
-        # populate matchings with extra intermediaries by adding truck fixed costs
-        for n_trucks in range(
-            min_cost_n_trucks + 1, min(min_cost_n_trucks + self.N_MATCHINGS, max_n_trucks + 1)
-        ):
-            self.output.subsection(f"Populating matchings using at least {n_trucks} trucks")
-
-            matching = deepcopy(min_cost_matching)
-
-            n_extra_intermediaries = n_trucks - min_cost_n_trucks
-            matching.cost = matching.cost + n_extra_intermediaries * self.instance.truck_fixed_cost
-
-            base_matchings[n_trucks] = matching
-
-            self.output.metric("Objective", matching.cost)
-
-        self.min_trucks = min(base_matchings.keys())
-        self.max_trucks = max(base_matchings.keys())
-
-        matchings_cost = {k: v.cost for k, v in base_matchings.items()}
+        for n_trucks in range(min_trucks + 1, self.n_intermediaries + 1):
+            self.output.subsection(f"Populating matchings using {n_trucks} trucks")
+            if self.vrp_mode == "exact":
+                matching = self.vrp_solver.solve(n_trucks, n_trucks)
+                cost = matching.cost
+                
+            elif self.vrp_mode == "approximate":
+                cost = (
+                    min_cost_matching.cost 
+                    + (n_trucks - min_trucks) * self.instance.truck_fixed_cost
+                )
+            else:
+                raise ValueError("VRP Mode Not Recognized")
+            self.output.metric("Cost", cost, precision=0)
+            routing_cost_by_truck_count[n_trucks] = cost
 
         self.output.subsection("Initial Matching Costs")
-        self.output.collection("Cost by truck count", matchings_cost)
+        self.output.collection("Cost by truck count", routing_cost_by_truck_count)
 
-        return base_matchings
+        return routing_cost_by_truck_count
 
     def _initialize_intermediary_set_to_cost(self) -> dict[frozenset[str], float]:
         """Initialize the catalogue of all explored intermediary selections.
@@ -1388,7 +1361,7 @@ class Optimizer:
             float: total cost associated with the set of intermediaries.
         """
         n_trucks = len(intermediary_set)
-        vrp_cost = self.base_matchings[n_trucks].cost
+        vrp_cost = self.routing_cost_by_truck_count[n_trucks]
         het_costs = sum(self.het_costs[intermediary_id] for intermediary_id in intermediary_set)
         return vrp_cost + het_costs
 

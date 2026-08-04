@@ -16,7 +16,7 @@ def get_solver_threads() -> int:
                 return max(1, int(value))
             except ValueError:
                 pass
-    return 1
+    return 0
 
 
 class GurobiTSPSolver:
@@ -85,9 +85,10 @@ class GurobiTSPSolver:
                 model.addConstr(edge_vars[edge] >= farmer_vars[farmer.id])
 
         # Make sure that if any farmer is picked up, then used is equal to one
-        model.addConstrs(
-            (used >= farmer_vars[farmer.id] for farmer in self.instance.farmers), "farmer_used"
-        )
+        for farmer in self.instance.farmers:
+            model.addConstr(
+                used >= farmer_vars[farmer.id], "farmer_used"
+            )
 
         # Make sure that at least one farmer is picked up
         model.addConstr(
@@ -232,8 +233,8 @@ class GurobiVRPSolver:
         for intermediary_id in intermediary_ids:
             model.addConstrs(
                 (
-                    used[intermediary_id] >= matching_vars[intermediary_id, farmer.id]
-                    for farmer in self.instance.farmers
+                    used[intermediary_id] >= matching_vars[intermediary_id, farmer_id]
+                    for farmer_id in farmer_ids
                 ),
                 f"used_lower_{intermediary_id}",
             )
@@ -242,7 +243,8 @@ class GurobiVRPSolver:
         for intermediary_id in intermediary_ids:
             model.addConstr(
                 gp.quicksum(
-                    matching_vars[intermediary_id, farmer.id] for farmer in self.instance.farmers
+                    matching_vars[intermediary_id, farmer_id] 
+                    for farmer_id in self.instance.farmer_by_id
                 )
                 >= used[intermediary_id],
                 f"used_upper_{intermediary_id}",
@@ -259,11 +261,11 @@ class GurobiVRPSolver:
         model.addConstrs(
             (
                 gp.quicksum(
-                    matching_vars[intermediary_id, farmer.id]
+                    matching_vars[intermediary_id, farmer_id]
                     for intermediary_id in intermediary_ids
                 )
                 == 1
-                for farmer in self.instance.farmers
+                for farmer_id in self.instance.farmer_by_id
             ),
             "one_truck",
         )
@@ -309,7 +311,6 @@ class GurobiVRPSolver:
         total_cost = model.ObjVal
 
         # Extract the matching
-        alt_cost = 0
         routes = []
         for intermediary_id in intermediary_ids:
             selected_farmers = [
@@ -331,3 +332,4 @@ class GurobiVRPSolver:
             raise ValueError(f"Objective mismatch: {total_cost} != {alt_cost}")
 
         return matching
+

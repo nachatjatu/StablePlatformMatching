@@ -1,6 +1,7 @@
 import json
 import pickle
 
+from pathlib import Path
 import numpy as np
 import osmnx as ox
 import pandas as pd
@@ -9,6 +10,8 @@ from pyproj import Transformer
 from scipy.interpolate import interp1d
 from scipy.special import gammaln, logsumexp
 from scipy.stats import gaussian_kde
+
+from ..graphs.road_graphs import RoadGraph
 
 """
 DEFINE GLOBAL CONSTANTS
@@ -41,13 +44,13 @@ INSTANCEGENERATOR CLASS
 class InstanceGenerator:
     def __init__(
         self,
-        farmers_df_path="data/farmers.csv",  # full dataset of farmer pickups
-        farmers_14_df_path="data/farmers_14.csv",  # 14 day dataset of farmer pickups
-        intermediaries_df_path="data/intermediaries.csv",  # full dataset of intermediaries
-        graph_path="data/graph_0-14960_00_new.pickle",  # pickle file of regional road graph (osmnx)
-        alpha_path="data/precomputed_alpha.json",
-        sigmas_path="data/precomputed_sigmas.json",
-    ):
+        farmers_df_path: str | Path = "data/farmers.csv",  # full dataset of farmer pickups
+        farmers_14_df_path: str | Path = "data/farmers_14.csv",  # 14 day dataset of farmer pickups
+        intermediaries_df_path: str | Path = "data/intermediaries.csv",  # full dataset of intermediaries
+        graph_path: str | Path = "data/graph_0-14960_00_new.pickle",  # pickle file of regional road graph (osmnx)
+        alpha_path: str | Path = "data/precomputed_alpha.json",
+        sigmas_path: str | Path = "data/precomputed_sigmas.json",
+    ) -> None:
 
         # CRS transformers
         self.xy_to_ll = Transformer.from_crs(INDO_CRS, LL_CRS, always_xy=True)
@@ -120,7 +123,7 @@ class InstanceGenerator:
             G = pickle.load(f)
         G_proj = ox.project_graph(G, to_crs=INDO_CRS)
         nodes_proj, _ = ox.graph_to_gdfs(G_proj)
-        return G, G_proj, nodes_proj.total_bounds
+        return RoadGraph(G), G_proj, nodes_proj.total_bounds
 
     def _init_intermediary_kde(self):
         coords = self.intermediaries_df.drop_duplicates(["intermediary_id"])[
