@@ -80,10 +80,6 @@ class InstanceGenerator:
         self.cycle_length = CYCLE_LENGTH
     """
 
-
-
-
-
     def __init__(
         self,
         farmers_full_csv_path: Path,  
@@ -168,7 +164,7 @@ class InstanceGenerator:
 
         # internal instance "state"
         self.intermediaries = {}
-        self.mills = [DEFAULT_MILL]
+        self.mills = []
 
         self.calendar_df = pd.DataFrame()
         self.cycle_length = CYCLE_LENGTH
@@ -233,49 +229,6 @@ class InstanceGenerator:
             }
 
         self.intermediaries = intermediaries
-
-    def _compute_log_base_grid_prior(
-        self, 
-        intermediary_xy: tuple[float, float], 
-        intermediary_type: str, 
-        alpha: float
-    ) -> npt.NDArray[np.float64]:
-        """
-        Constructs a base farmer location probability density for an intermediary, 
-        taking into account global farmer density as well as that intermediary's "distance"
-        preferences. Returns log density for numerical stability. Uses Euclidean norm for distance.
-
-        Args:
-            intermediary_xy (tuple[float, float]): the intermediary's location in local CRS.
-            intermediary_type (str): the intermediary's representative type ID.
-            alpha (float): weighting parameter.
-
-        Returns:
-            npt.NDArray[np.float64]: a vertically stacked array of log probabilities corresponding
-                to each grid point in `grid_coords`.
-        """
-
-        dists = np.linalg.norm(self.grid_coords.T - intermediary_xy, axis=1)
-        gamma_lookup = self.gamma_lookups[intermediary_type]
-
-        # get raw distance distribution from gamma lookup table
-        p_dist_raw = gamma_lookup(dists)
-
-        # convert radial density to grid-cell density and apply a radial correction factor
-        min_radius = RES / 2
-        radius_correction = np.maximum(dists, min_radius)
-        p_dist_grid = p_dist_raw / radius_correction
-        p_dist_grid = p_dist_grid / (p_dist_grid.sum() + TOL) # normalize
-
-        # get farmer spatial prior over same grid support
-        p_farmer_grid = self.p_spatial
-        p_farmer_grid = p_farmer_grid / (p_farmer_grid.sum() + TOL) # normalize
-
-        # combine log probabilities, giving the global farmer density an `alpha` weight.
-        log_p_base = np.log(p_dist_grid + TOL) + alpha * np.log(p_farmer_grid + TOL)
-        log_p_base -= logsumexp(log_p_base) # normalize in log space
-
-        return log_p_base
 
     def gen_farmer_xys(
         self, 
@@ -507,7 +460,7 @@ class InstanceGenerator:
 
         # filter
         calendar_df = calendar_df[
-            ["scaled_quantity", "day", "farmer_lat", "farmer_lon", "intermediary_id"]
+            ["scaled_quantity", "day", "farmer_lat", "farmer_lon", "intermediary_id", "farmer_id"]
         ]
 
         # set attributes
@@ -636,6 +589,183 @@ class InstanceGenerator:
         instance.set_graph(self.graph)
 
         return instance
+
+    def _init_graph_and_bbox(
+        self, 
+        graph_pkl_path: Path
+    ) -> tuple[RoadGraph, npt.NDArray[np.float64]]:
+        """
+        Initializes graph and bounding box data for the instance.
+
+        Args:
+            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the 
+                covered platform region.
+        
+        Returns:
+            tuple[RoadGraph, npt.NDArray[np.float64]]: a tuple whose first argument is the RoadGraph 
+                for the road network and second argument is the corresponding bounding box.
+        """
+        with open(graph_pkl_path, "rb") as f:
+            G = pickle.load(f)
+
+        G_proj = ox.project_graph(G, to_crs=INDO_CRS)
+        nodes_proj, _ = ox.graph_to_gdfs(G_proj)
+
+        return RoadGraph(G), nodes_proj.total_bounds
+
+    def _init_intermediary_kde(self) -> gaussian_kde:
+        """Initializes Gaussian KDE for global intermediary spatial density."""
+        coords = (
+            self.intermediaries_df
+            .drop_duplicates(["intermediary_id"])
+            [["intermediary_x", "intermediary_y"]].T
+        )
+        return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
+
+    def _init_farmer_kde(self) -> gaussian_kde:
+        """Initializes Gaussian KDE for global farmer spatial density."""
+        coords = (
+            self.farmers_full_df
+            .drop_duplicates(["farmer_x", "farmer_y"])
+            [["farmer_x", "farmer_y"]].T
+        )
+        return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
+
+    def _init_gamma_lookups(self) -> dict[str, interp1d]:
+        """
+        Initializes a Gamma KDE lookup table, using 1D interpolation for efficiency.
+
+        Returns:
+            dict[str, interp1d]: a dict mapping intermediary IDs to a interpolation object
+                approximating a smoothed distance distribution.  
+        """
+        # get historical distances by int
+        intermediary_to_dists = (
+            self.farmers_full_df
+            .drop_duplicates(["intermediary_id", "farmer_x", "farmer_y"]) 
+            .groupby("intermediary_id")["distance"]
+            .apply(np.array)
+            .to_dict()
+        )
+
+        lookups = {}
+        x_eval = np.linspace(0, MAX_DIST + KDE_DIST_BUFFER, N_GAMMA_STEPS)
+
+        # for each int, fit a smoothed distance distribution
+        for intermediary_id, dists in intermediary_to_dists.items():
+            n = len(dists)
+            h = 0.1 * np.mean(dists) + TOL
+            shape = dists / h
+            # evaluate Gamma log-PDF for each x
+            pdf_values = np.zeros_like(x_eval)
+            for i in range(n):
+                s, scale = shape[i], h
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    # Gamma log-PDF: (s-1)*log(x) - x/scale - (log(gamma(s)) + s*log(scale))
+                    log_pdf = (
+                        (s - 1) * np.log(x_eval + TOL)
+                        - (x_eval / scale)
+                        - (gammaln(s + TOL) + s * np.log(scale))
+                    )
+                pdf_values += np.exp(log_pdf)
+            pdf_values /= n
+
+            # interpolate for efficiency
+            lookups[intermediary_id] = interp1d(
+                x_eval, pdf_values, fill_value=0.0, bounds_error=False
+            )
+
+        return lookups
+
+    def _init_hist_offsets(self) -> pd.Series:
+        """
+        Initializes a DataFrame of historical date offsets from a periodic cycle. In particular,
+        this function determines how many days a pickup "deviated" from its usual day.
+        For example, a pickup that usually takes place on the first Monday but is later found
+        to happen on the first Wednesday would have an offset of +2.
+
+        Returns:
+            pd.DataFrame: a DataFrame of historical date offsets.
+        """
+        def _compute_offsets(
+            group: pd.DataFrame, 
+            period: int = 14
+        ) -> pd.DataFrame:
+            """Computes perturbations from a periodic cycle."""
+            group = group.sort_values("date").copy()
+            dates = pd.to_datetime(group["date"]).dt.normalize()
+            t = (dates - dates.iloc[0]).dt.days.to_numpy()
+            cycle_index = np.round(t / period).astype(int)
+            phase = int(np.round(np.median(t - period * cycle_index)))
+            group["delta"] = t - (phase + period * cycle_index)
+            return group
+
+        # copy to avoid mutating attribute df
+        pickups_df = self.farmers_full_df.copy()
+
+        pickups_df["date"] = pd.to_datetime(pickups_df["date"])
+        pickups_df = pickups_df.sort_values(["intermediary_id", "farmer_x", "farmer_y", "date"])
+
+        # compute gaps between pickups
+        pickup_gaps = (
+            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"])
+            .date.diff().dt.days
+        )
+
+        # filter out excessively long pickup gaps (these represent breaks)
+        pickup_gaps = pickup_gaps[(pickup_gaps > 0) & (pickup_gaps < 90)]
+
+        # compute historical offsets
+        hist_offsets = (
+            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"], group_keys=False)
+            .apply(_compute_offsets)
+        )["delta"]
+
+        # return truncated offsets (to avoid collisions with competing 7-day offsets)
+        return hist_offsets[hist_offsets.abs() < 7]
+
+    def _compute_log_base_grid_prior(
+        self, 
+        intermediary_xy: tuple[float, float], 
+        intermediary_type: str, 
+        alpha: float
+    ) -> npt.NDArray[np.float64]:
+        """
+        Constructs a base farmer location probability density for an intermediary, 
+        taking into account global farmer density as well as that intermediary's "distance"
+        preferences. Returns log density for numerical stability. Uses Euclidean norm for distance.
+
+        Args:
+            intermediary_xy (tuple[float, float]): the intermediary's location in local CRS.
+            intermediary_type (str): the intermediary's representative type ID.
+            alpha (float): weighting parameter.
+
+        Returns:
+            npt.NDArray[np.float64]: a vertically stacked array of log probabilities corresponding
+                to each grid point in `grid_coords`.
+        """
+
+        dists = np.linalg.norm(self.grid_coords.T - intermediary_xy, axis=1)
+        gamma_lookup = self.gamma_lookups[intermediary_type]
+
+        # get raw distance distribution from gamma lookup table
+        p_dist_raw = gamma_lookup(dists)
+
+        # convert radial density to grid-cell density and apply a radial correction factor
+        min_radius = RES / 2
+        radius_correction = np.maximum(dists, min_radius)
+        p_dist_grid = p_dist_raw / radius_correction
+        p_dist_grid = p_dist_grid / (p_dist_grid.sum() + TOL) # normalize
+
+        # get farmer spatial prior over same grid support
+        p_farmer_grid = self.p_spatial
+        p_farmer_grid = p_farmer_grid / (p_farmer_grid.sum() + TOL) # normalize
+
+        # combine log probabilities, giving the global farmer density an `alpha` weight.
+        log_p_base = np.log(p_dist_grid + TOL) + alpha * np.log(p_farmer_grid + TOL)
+        log_p_base -= logsumexp(log_p_base) # normalize in log space
+
+        return log_p_base
 
     @staticmethod
     def _cap_quantities(
@@ -784,137 +914,3 @@ class InstanceGenerator:
         pickup_index = pd.MultiIndex.from_frame(calendar_df[["day", "intermediary_id"]])
 
         return calendar_df.loc[~pickup_index.isin(inactive_index)].copy()
-
-    def _init_graph_and_bbox(
-        self, 
-        graph_pkl_path: Path
-    ) -> tuple[RoadGraph, npt.NDArray[np.float64]]:
-        """
-        Initializes graph and bounding box data for the instance.
-
-        Args:
-            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the 
-                covered platform region.
-        
-        Returns:
-            tuple[RoadGraph, npt.NDArray[np.float64]]: a tuple whose first argument is the RoadGraph 
-                for the road network and second argument is the corresponding bounding box.
-        """
-        with open(graph_pkl_path, "rb") as f:
-            G = pickle.load(f)
-
-        G_proj = ox.project_graph(G, to_crs=INDO_CRS)
-        nodes_proj, _ = ox.graph_to_gdfs(G_proj)
-
-        return RoadGraph(G), nodes_proj.total_bounds
-
-    def _init_intermediary_kde(self) -> gaussian_kde:
-        """Initializes Gaussian KDE for global intermediary spatial density."""
-        coords = (
-            self.intermediaries_df
-            .drop_duplicates(["intermediary_id"])
-            [["intermediary_x", "intermediary_y"]].T
-        )
-        return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
-
-    def _init_farmer_kde(self) -> gaussian_kde:
-        """Initializes Gaussian KDE for global farmer spatial density."""
-        coords = (
-            self.farmers_full_df
-            .drop_duplicates(["farmer_x", "farmer_y"])
-            [["farmer_x", "farmer_y"]].T
-        )
-        return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
-
-    def _init_gamma_lookups(self) -> dict[str, interp1d]:
-        """
-        Initializes a Gamma KDE lookup table, using 1D interpolation for efficiency.
-
-        Returns:
-            dict[str, interp1d]: a dict mapping intermediary IDs to a interpolation object
-                approximating a smoothed distance distribution.  
-        """
-        # get historical distances by int
-        intermediary_to_dists = (
-            self.farmers_full_df
-            .drop_duplicates(["intermediary_id", "farmer_x", "farmer_y"]) 
-            .groupby("intermediary_id")["distance"]
-            .apply(np.array)
-            .to_dict()
-        )
-
-        lookups = {}
-        x_eval = np.linspace(0, MAX_DIST + KDE_DIST_BUFFER, N_GAMMA_STEPS)
-
-        # for each int, fit a smoothed distance distribution
-        for intermediary_id, dists in intermediary_to_dists.items():
-            n = len(dists)
-            h = 0.1 * np.mean(dists) + TOL
-            shape = dists / h
-            # evaluate Gamma log-PDF for each x
-            pdf_values = np.zeros_like(x_eval)
-            for i in range(n):
-                s, scale = shape[i], h
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    # Gamma log-PDF: (s-1)*log(x) - x/scale - (log(gamma(s)) + s*log(scale))
-                    log_pdf = (
-                        (s - 1) * np.log(x_eval + TOL)
-                        - (x_eval / scale)
-                        - (gammaln(s + TOL) + s * np.log(scale))
-                    )
-                pdf_values += np.exp(log_pdf)
-            pdf_values /= n
-
-            # interpolate for efficiency
-            lookups[intermediary_id] = interp1d(
-                x_eval, pdf_values, fill_value=0.0, bounds_error=False
-            )
-
-        return lookups
-
-    def _init_hist_offsets(self) -> pd.Series:
-        """
-        Initializes a DataFrame of historical date offsets from a periodic cycle. In particular,
-        this function determines how many days a pickup "deviated" from its usual day.
-        For example, a pickup that usually takes place on the first Monday but is later found
-        to happen on the first Wednesday would have an offset of +2.
-
-        Returns:
-            pd.DataFrame: a DataFrame of historical date offsets.
-        """
-        def _compute_offsets(
-            group: pd.DataFrame, 
-            period: int = 14
-        ) -> pd.DataFrame:
-            """Computes perturbations from a periodic cycle."""
-            group = group.sort_values("date").copy()
-            dates = pd.to_datetime(group["date"]).dt.normalize()
-            t = (dates - dates.iloc[0]).dt.days.to_numpy()
-            cycle_index = np.round(t / period).astype(int)
-            phase = int(np.round(np.median(t - period * cycle_index)))
-            group["delta"] = t - (phase + period * cycle_index)
-            return group
-
-        # copy to avoid mutating attribute df
-        pickups_df = self.farmers_full_df.copy()
-
-        pickups_df["date"] = pd.to_datetime(pickups_df["date"])
-        pickups_df = pickups_df.sort_values(["intermediary_id", "farmer_x", "farmer_y", "date"])
-
-        # compute gaps between pickups
-        pickup_gaps = (
-            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"])
-            .date.diff().dt.days
-        )
-
-        # filter out excessively long pickup gaps (these represent breaks)
-        pickup_gaps = pickup_gaps[(pickup_gaps > 0) & (pickup_gaps < 90)]
-
-        # compute historical offsets
-        hist_offsets = (
-            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"], group_keys=False)
-            .apply(_compute_offsets)
-        )["delta"]
-
-        # return truncated offsets (to avoid collisions with competing 7-day offsets)
-        return hist_offsets[hist_offsets.abs() < 7]
