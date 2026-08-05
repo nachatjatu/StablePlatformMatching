@@ -43,12 +43,12 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
                 status="No unresolved active branches",
                 previous_lb=previous_lb,
                 previous_ub=previous_ub,
-                fill="."
+                fill="="
             )
 
             break
 
-        if optimizer.options.get("early_stop", False):
+        if optimizer.options.early_stop:
             optimizer.best_ub = max(
                 branch_solution.upper_bound for branch_solution in active_branches
             )
@@ -74,7 +74,7 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
                 status="No unresolved active branches",
                 previous_lb=previous_lb,
                 previous_ub=previous_ub,
-                fill="."
+                fill="="
             )
 
             break
@@ -182,14 +182,21 @@ def solve_exact(
                 active_branches.append(branch_solution)
 
         if not active_branches:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
             optimizer.best_ub = optimizer.best_lb
 
             optimizer.record_summary()
 
-            optimizer.output.section("Search Complete")
-            optimizer.output.status("All branches have been resolved or pruned")
-            optimizer.output.metric("Optimal objective", optimizer.best_lb)
-            optimizer.output.metric("Final gap", 0.0)
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="No unresolved active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
+            )
 
             break
 
@@ -526,10 +533,10 @@ def solve_branch_heuristic(
 
     # prune branch early if forced upper bound cannot beat existing integer solution
     can_improve = optimizer.exceeds_global_lb(
-        forced_ub_solution.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
+        forced_ub_solution.platform_profit, optimizer.BRANCH_PRUNE_TOL
     )
     optimizer.output.metric("Global lower bound", optimizer.best_lb)
-    optimizer.output.metric("Improvement tolerance", optimizer.GLOBAL_LB_UPDATE_TOL)
+    optimizer.output.metric("Improvement tolerance", optimizer.BRANCH_PRUNE_TOL)
     optimizer.output.metric("Decision", "Retain" if can_improve else "Prune")    
 
     if not can_improve:
@@ -555,6 +562,7 @@ def solve_branch_heuristic(
                 status="Tightened the global upper bound using root",
                 previous_lb=previous_lb,
                 previous_ub=previous_ub,
+                fill="."
             )
             
         
@@ -570,7 +578,7 @@ def solve_branch_heuristic(
         intermediary_profits = {
             intermediary_id: np.random.uniform(0, 1)
             if forced_ub_solution.updated_intermediary_profits[intermediary_id]
-            > optimizer.BRANCH_SCORE_TOL
+            > optimizer.RANDOM_BRANCH_TOL
             else 0.0
             for intermediary_id in optimizer.intermediary_ids
         }

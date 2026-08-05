@@ -9,10 +9,15 @@ from ..domain.matching import Matching
 from ..reporting.containers import DualSolution, InstanceSummary, PrimalSolution, Solution
 from ..reporting.printer import Printer
 from .branch import Branch
+from .options import OptimizerParams, SolverOptions
 from .solvers.dynamic_solvers import DynamicTSPSolver
 from .solvers.lp_solvers import GurobiVRPSolver
 from .solvers.runtime import require_solution
 from .solvers.search_strategies import solve_exact, solve_heuristic
+
+from dataclasses import fields
+from pprint import pformat
+from collections.abc import Mapping, Sequence, Set
 
 IntermediaryId = str
 FarmerId = str
@@ -41,11 +46,11 @@ class Optimizer:
     """
 
     # Tolerance for row generation
-    BRANCH_PRUNE_TOL = 1e-6
-    GLOBAL_LB_UPDATE_TOL = 1.0
+    BRANCH_PRUNE_TOL = 1.0
     PRIMARY_OBJECTIVE_TOL = 1.0
+    GLOBAL_LB_UPDATE_TOL = 1e-9
 
-    BRANCH_SCORE_TOL = 1e-9
+    RANDOM_BRANCH_TOL = 1.0
     CUT_TOL = 1.0
     COLUMN_TOL = 1.0
     INT_TOL = 1e-9
@@ -57,7 +62,7 @@ class Optimizer:
     def __init__(
         self,
         instance: Instance,
-        parameters: dict,
+        params: OptimizerParams,
     ) -> None:
         """
         Summary
@@ -70,35 +75,28 @@ class Optimizer:
         Raises:
             ValueError: _description_
         """
+
+        params.validate(instance)
+
+        self.params = params
+        self.output = Printer(width=params.print_width, enabled=params.verbose)
+        
+        self._print_optimizer_params()
+
         self.instance = instance
-        self.output = Printer(
-            width=parameters.get("print_width", 80),
-            enabled=parameters.get("verbose", True),
-        )
 
         self.n_farmers = len(self.instance.farmers)
         self.n_intermediaries = len(self.instance.intermediaries)
 
-        self.backend = parameters.get("backend", "")
-        self.vrp_mode = parameters.get("vrp_mode", "approximate")
+        self.farmer_ids = [farmer.id for farmer in self.instance.farmers]
+        self.intermediary_ids = [intermediary.id for intermediary in self.instance.intermediaries]
 
-        self.pay_unmatched = False
-        self.aggregate = False
-
-        if self.backend != "gurobi":
-            raise ValueError(
-                f"Solver {self.backend} is not supported. Supported solvers are: 'gurobi'."
-            )
+        self.intermediary_id_to_capacity = {
+            intermediary.id: intermediary.capacity for intermediary in self.instance.intermediaries
+        }
 
         self.vrp_solver = GurobiVRPSolver(self.instance)
         self.tsp_solver = DynamicTSPSolver(self.instance)
-
-        self.parameters = parameters
-        self.het_costs = parameters["het_costs"]
-
-        for intermediary_id in self.het_costs:
-            if self.het_costs[intermediary_id] + self.instance.truck_fixed_cost < 0:
-                raise ValueError(f"Het cost for intermediary {intermediary_id} is negative.")
 
         self._original_hist_sets = {
             intermediary.id: (
@@ -111,7 +109,6 @@ class Optimizer:
             for intermediary in self.instance.intermediaries
         }
         self._configure_hist_sets(aggregate=False)
-        self.dominance = self._calc_dominance()
 
         self.routing_cost_by_truck_count = self._initialize_routing_cost_by_truck_count()
 
@@ -129,13 +126,6 @@ class Optimizer:
             "total": 0.0,
         }
 
-        self.farmer_ids = [farmer.id for farmer in self.instance.farmers]
-        self.intermediary_ids = [intermediary.id for intermediary in self.instance.intermediaries]
-
-        self.intermediary_id_to_capacity = {
-            intermediary.id: intermediary.capacity for intermediary in self.instance.intermediaries
-        }
-
         self.best_lb_summary: PrimalSolution | None = None
         self.best_lb_set: frozenset[str] | None = None
 
@@ -144,20 +134,13 @@ class Optimizer:
         self._initial_intermediary_set_to_cost = initial_set_to_cost.copy()
         self.intermediary_set_to_cost = initial_set_to_cost.copy()
 
-    def solve(
-        self,
-        strategy: str,
-        options: dict[str, bool] | None = None,
-    ) -> InstanceSummary:
+        self.dominance_relations: list[tuple[str, str]] = []
+
+    def solve(self, options: SolverOptions) -> InstanceSummary:
         """
         Public entrypoint to run optimization with a given strategy.
 
         Args:
-            strategy (str): the type of search strategy the optimizer should
-                use for branch-and-price. currently supported strategies are
-                `exact`, `heuristic_unoptimized`, and `heuristic_optimized`.
-            options (dict[str, bool] | None, optional): dict containing solver options.
-                defaults to None.
 
         Raises:
             ValueError: unknown solver strategy.
@@ -168,28 +151,17 @@ class Optimizer:
                 and # of oracle calls
         """
 
-        # validate strategy before proceeding
-        valid_strategies = {"exact", "heuristic_unoptimized", "heuristic_optimized"}
-        if strategy not in valid_strategies:
-            raise ValueError(f"Unknown solver strategy: {strategy!r}")
+        self.options = options
 
-        self.options = {
-            "structured_farmer_payments": False,
-            "domination": False,
-            "early_stop": False,
-            "aggregate": False,
-            "pay_unmatched": False,
-            **({} if options is None else options),
-        }
+        self._print_solver_options()
 
-        if self.options["structured_farmer_payments"]:
+        if self.options.structured_farmer_payments:
             self._verify_farmer_distances()
 
-        self.aggregate = self.options["aggregate"]
-        self.pay_unmatched = self.options["pay_unmatched"]
-
-        self._configure_hist_sets(self.aggregate)
-        self.dominance = self._calc_dominance()
+        self._configure_hist_sets(self.options.aggregate)
+        self.dominance_relations = (
+            self._calc_dominance() if self.options.dominance_constraints else []
+        )
 
         self.intermediary_set_to_cost = (
             self._initial_intermediary_set_to_cost.copy()
@@ -197,15 +169,10 @@ class Optimizer:
         self.route_by_farmer_ids_set = {}
 
         # reset solver state
-        self.best_lb = -float("inf")
-        self.best_ub = float("inf")
+        self.best_lb, self.best_ub = -float("inf"), float("inf")
         self.best_lb_summary = None
         self.best_lb_set = None
         self.oracle_calls = 0
-
-        self.instance_summary = InstanceSummary(
-            instance=self.instance, parameters=self.parameters, strategy=strategy
-        )
 
         self.time_usage = {
             "tsp": 0.0,
@@ -216,19 +183,21 @@ class Optimizer:
             "total": 0.0,
         }
 
-        self.output.section(f"Strategy: {strategy.replace('_', ' ').title()}", fill="=")
+        self.instance_summary = InstanceSummary(
+            instance=self.instance, params=self.params, strategy=self.options.strategy
+        )
+
+        self.output.section(f"Strategy: {self.options.strategy}")
         self.output.metric("Farmers", self.n_farmers, precision=0)
         self.output.metric("Intermediaries", self.n_intermediaries, precision=0)
 
         # solve using specified search strategy
-        if strategy == "exact":
+        if self.options.strategy == "exact":
             best_lb_solution = solve_exact(self)
-        elif strategy == "heuristic_unoptimized":
+        elif self.options.strategy == "heuristic_unoptimized":
             best_lb_solution = solve_heuristic(self, optimize=False)
-        elif strategy == "heuristic_optimized":
-            best_lb_solution = solve_heuristic(self, optimize=True)
         else:
-            raise ValueError(f"Unknown solver strategy: {strategy!r}")
+            best_lb_solution = solve_heuristic(self, optimize=True)
 
         # raise error if optimization fails to find a solution
         if best_lb_solution is None:
@@ -379,7 +348,7 @@ class Optimizer:
 
         # constraint 4: pay intermediaries at most their max. capacity * fruit price = max. value
         if sol_type in ["exact", "forced_lower_bound"]:
-            if not self.pay_unmatched:
+            if not self.options.pay_unmatched:
                 for intermediary in self.instance.intermediaries:
                     model.addConstr(
                         intermediary_profit_vars[intermediary.id]
@@ -394,7 +363,7 @@ class Optimizer:
                     )
 
         # constraint 5: if applicable, do not pay unmatched intermediaries
-        if not self.pay_unmatched:
+        if not self.options.pay_unmatched:
             model.addConstrs(
                 intermediary_profit_vars[intermediary_id] <= 0
                 for intermediary_id in branch.forced_unmatch
@@ -414,7 +383,7 @@ class Optimizer:
 
         # constraint 8: payment must be >= avg worst-case deviation
         #   opportunity from hist set + robust premium
-        epsilon = self.parameters["epsilon"]
+        epsilons = self.params.epsilons
         for intermediary in self.instance.intermediaries:
             # note that constraint 7 makes kappa equal to max deviation
             #   opportunity from historical set
@@ -428,12 +397,12 @@ class Optimizer:
             )
             model.addConstr(
                 intermediary_profit_vars[intermediary.id]
-                >= avg_deviation_payoff + eta[intermediary.id] * epsilon[intermediary.id],
+                >= avg_deviation_payoff + eta[intermediary.id] * epsilons[intermediary.id],
                 f"stability_{intermediary.id}",
             )
 
         # impose optional constraints for farmer structured payments and intermediary domination
-        if self.options.get("structured_farmer_payments"):
+        if self.options.structured_farmer_payments:
             fixed_payment = model.addVar(
                 vtype=gp.GRB.CONTINUOUS, lb=-float("inf"), name="fixed_payment"
             )
@@ -470,14 +439,14 @@ class Optimizer:
             paved_distance_penalty = None
             dirt_distance_penalty = None
 
-        if self.options.get("domination"):
-            self.output.collection("Applied dominance relations", self.dominance)
+        if self.options.dominance_constraints:
+            self.output.collection("Applied dominance relations", self.dominance_relations)
 
-            if not self.dominance:
+            if not self.dominance_relations:
                 self.output.warning(
                     "Domination is enabled, but no dominance relations were generated."
                 )
-            for intermediary_id_1, intermediary_id_2 in self.dominance:
+            for intermediary_id_1, intermediary_id_2 in self.dominance_relations:
                 model.addConstr(
                     intermediary_profit_vars[intermediary_id_1]
                     >= intermediary_profit_vars[intermediary_id_2],
@@ -569,7 +538,7 @@ class Optimizer:
                         violation = (
                             obj
                             - kappa_val[intermediary.id, hist_set_index]
-                            - self.het_costs[intermediary.id]
+                            - self.params.het_costs[intermediary.id]
                         )
 
                         farmer_ids_set = frozenset([farmer.id for farmer in route.farmers])
@@ -779,7 +748,7 @@ class Optimizer:
         model.setParam("Threads", get_solver_threads())
         model.setParam("OutputFlag", 0)
 
-        if self.pay_unmatched:
+        if self.options.pay_unmatched:
             raise NotImplementedError(
                 "Dual column generation is not implemented for pay_unmatched=True."
             )
@@ -809,21 +778,21 @@ class Optimizer:
 
         # optional dual variables corresponding to optional primal
         #   structured farmer payment and domination constraints
-        if self.options.get("structured_farmer_payments"):
+        if self.options.structured_farmer_payments:
             gamma = model.addVars(
                 self.farmer_ids, vtype=gp.GRB.CONTINUOUS, lb=-float("inf"), name="gamma"
             )
         else:
             gamma = None
 
-        if self.options.get("domination"):
-            self.output.collection("Applied dominance relations", self.dominance)
+        if self.options.dominance_constraints:
+            self.output.collection("Applied dominance relations", self.dominance_relations)
 
-            if not self.dominance:
+            if not self.dominance_relations:
                 self.output.warning(
                     "Domination is enabled, but no dominance relations were generated."
                 )
-            D = model.addVars(self.dominance, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="D")
+            D = model.addVars(self.dominance_relations, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="D")
         else:
             D = None
 
@@ -857,16 +826,16 @@ class Optimizer:
                 )
         # dual constraint 2: corresponds to intermediary_profit_vars in primal
         if D is not None:
-            self.output.collection("Applied dominance relations", self.dominance)
+            self.output.collection("Applied dominance relations", self.dominance_relations)
 
-            if not self.dominance:
+            if not self.dominance_relations:
                 self.output.warning(
                     "Domination is enabled, but no dominance relations were generated."
                 )
 
             for intermediary in self.instance.intermediaries:
                 n_dominates, n_dominated_by = 0, 0
-                for intermediary_id1, intermediary_id2 in self.dominance:
+                for intermediary_id1, intermediary_id2 in self.dominance_relations:
                     if intermediary.id == intermediary_id1:
                         n_dominates += D[intermediary_id1, intermediary_id2]
                     elif intermediary.id == intermediary_id2:
@@ -899,7 +868,7 @@ class Optimizer:
         # dual constraint 4: corresponds to eta variable in primal
         for intermediary in self.instance.intermediaries:
             model.addConstr(
-                -self.parameters["epsilon"][intermediary.id] * mu[intermediary.id]
+                -self.params.epsilons[intermediary.id] * mu[intermediary.id]
                 + gp.quicksum(
                     alpha[intermediary.id, hist_set_index, route_set_index]
                     * sum(
@@ -972,7 +941,7 @@ class Optimizer:
             alpha[intermediary.id, hist_set_index, route_set_index]
             * (
                 route.cost
-                + self.het_costs[intermediary.id]
+                + self.params.het_costs[intermediary.id]
                 - fruit_revenue_by_route[route_set_index]
             )
             for intermediary in self.instance.intermediaries
@@ -1094,7 +1063,7 @@ class Optimizer:
                 # see model for stability cut definition
                 cut_lhs = (
                     route.value
-                    - self.het_costs[intermediary.id]
+                    - self.params.het_costs[intermediary.id]
                     - route_farmer_payments
                     - eta[intermediary.id] * total_quantity_outside_hist_set
                     - kappa[intermediary.id, hist_set_idx]
@@ -1140,7 +1109,7 @@ class Optimizer:
 
         net_prizes = {
             intermediary_id: intermediary_id_to_prize[intermediary_id]
-            - self.het_costs[intermediary_id]
+            - self.params.het_costs[intermediary_id]
             for intermediary_id in intermediary_id_to_prize.keys()
         }
 
@@ -1186,7 +1155,7 @@ class Optimizer:
             intermediary_set for intermediary_set, obj in objs.items() if obj == max_obj
         ]
         max_cost = self.routing_cost_by_truck_count[len(max_intermediary_set[0])] + sum(
-            self.het_costs[intermediary_id] for intermediary_id in max_intermediary_set[0]
+            self.params.het_costs[intermediary_id] for intermediary_id in max_intermediary_set[0]
         )
 
         return max_intermediary_set[0], max_obj, max_cost
@@ -1263,7 +1232,7 @@ class Optimizer:
         # compare intermediaries
         def _dominates(i, j):
             return (
-                self.het_costs[i.id] < self.het_costs[j.id]
+                self.params.het_costs[i.id] < self.params.het_costs[j.id]
                 and hist_avg_quantities[i.id] >= hist_avg_quantities[j.id]
             )
 
@@ -1304,7 +1273,7 @@ class Optimizer:
 
         self.output.blank()
         self.output.subsection(f"Populating routing costs using at least {min_trucks} trucks")
-        self.output.metric("VRP mode", self.vrp_mode)
+        self.output.metric("VRP mode", self.params.vrp_mode)
         self.output.blank()
         self.output.subsubsection(f"Number of Trucks = {min_trucks}")
         self.output.metric("Cost", min_cost_matching.cost, precision=0)
@@ -1313,11 +1282,11 @@ class Optimizer:
         for n_trucks in range(min_trucks + 1, self.n_intermediaries + 1):
             self.output.blank()
             self.output.subsubsection(f"Number of Trucks = {n_trucks}")
-            if self.vrp_mode == "exact":
+            if self.params.vrp_mode == "exact":
                 matching = self.vrp_solver.solve(n_trucks, n_trucks)
                 cost = matching.cost
                 
-            elif self.vrp_mode == "approximate":
+            elif self.params.vrp_mode == "approximate":
                 cost = (
                     min_cost_matching.cost 
                     + (n_trucks - min_trucks) * self.instance.truck_fixed_cost
@@ -1346,7 +1315,7 @@ class Optimizer:
         """
         # sort intermediaries by heterogeneous costs.
         ordered_intermediaries = sorted(
-            self.instance.intermediaries, key=lambda x: self.het_costs[x.id], reverse=False
+            self.instance.intermediaries, key=lambda x: self.params.het_costs[x.id], reverse=False
         )
         # include first min_trucks intermediaries in min_set.
         min_set = set(
@@ -1369,10 +1338,38 @@ class Optimizer:
         """
         n_trucks = len(intermediary_set)
         vrp_cost = self.routing_cost_by_truck_count[n_trucks]
-        het_costs = sum(self.het_costs[intermediary_id] for intermediary_id in intermediary_set)
+        het_costs = sum(self.params.het_costs[intermediary_id] for intermediary_id in intermediary_set)
         return vrp_cost + het_costs
 
     def _verify_farmer_distances(self):
         for farmer in self.instance.farmers:
             if farmer.paved_to_mill is None or farmer.dirt_to_mill is None:
                 raise RuntimeError("Farmer distances not calculated.")
+            
+    def _print_optimizer_params(self) -> None:
+        self.output.section("Optimizer Parameters")
+
+        for param_field in fields(self.params):
+            value = getattr(self.params, param_field.name)
+            label = param_field.name
+
+            if isinstance(value, Mapping):
+                formatted = pformat(
+                    dict(value),
+                    width=self.output.width,
+                    sort_dicts=True,
+                    compact=False,
+                )
+                self.output.subsection(label)
+                self.output.message(formatted, indent=1)
+            else:
+                self.output.metric(label, value)
+
+    def _print_solver_options(self) -> None:
+        self.output.section("Solver Options")
+
+        for field in fields(self.options):
+            value = getattr(self.options, field.name)
+
+            label = field.name.replace("_", " ").title()
+            self.output.metric(label, value)

@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from ..options import OptimizerParams, SolverOptions
 from ...reporting.containers import DualSolution, InstanceSummary, PrimalSolution
 from ...reporting.printer import Printer
 from ..branch import Branch
@@ -12,15 +13,15 @@ class OptimizerProtocol(Protocol):
     best_lb_summary: PrimalSolution | None
 
     oracle_calls: int
-    options: dict[str, bool]
+    options: SolverOptions
     output: Printer
     instance_summary: InstanceSummary
     intermediary_ids: list[str]
 
-    INT_TOL: float
-    BRANCH_PRUNE_TOL = 1e-6
-    GLOBAL_LB_UPDATE_TOL = 1e-6
-    BRANCH_SCORE_TOL = 1e-9
+    INT_TOL = 1e-9
+    BRANCH_PRUNE_TOL = 1.0
+    GLOBAL_LB_UPDATE_TOL = 1e-9
+    RANDOM_BRANCH_TOL = 1.0
 
     def initialize_branch(self, branch: Branch) -> bool: ...
 

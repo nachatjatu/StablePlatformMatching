@@ -9,6 +9,7 @@ from ..domain.matching import Matching
 
 if TYPE_CHECKING:
     from ..optimization.branch import Branch
+    from ..optimization.options import OptimizerParams
 
 
 @dataclass
@@ -155,7 +156,7 @@ class BranchSolution:
 @dataclass
 class InstanceSummary:
     instance: Instance
-    parameters: dict[str, object]
+    params: OptimizerParams
     strategy: str
 
     start_time: float = field(default_factory=time.time)
