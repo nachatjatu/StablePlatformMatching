@@ -1,9 +1,9 @@
 from typing import Protocol
 
-from ..options import OptimizerParams, SolverOptions
 from ...reporting.containers import DualSolution, InstanceSummary, PrimalSolution
 from ...reporting.printer import Printer
 from ..branch import Branch
+from ..options import SolverOptions
 
 
 class OptimizerProtocol(Protocol):

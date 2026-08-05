@@ -1,11 +1,13 @@
 import os
 import time
+from collections.abc import Mapping
+from dataclasses import fields
 from itertools import combinations
+from pprint import pformat
 
 import gurobipy as gp
 
 from ..domain.instance import Instance
-from ..domain.matching import Matching
 from ..reporting.containers import DualSolution, InstanceSummary, PrimalSolution, Solution
 from ..reporting.printer import Printer
 from .branch import Branch
@@ -14,10 +16,6 @@ from .solvers.dynamic_solvers import DynamicTSPSolver
 from .solvers.lp_solvers import GurobiVRPSolver
 from .solvers.runtime import require_solution
 from .solvers.search_strategies import solve_exact, solve_heuristic
-
-from dataclasses import fields
-from pprint import pformat
-from collections.abc import Mapping, Sequence, Set
 
 IntermediaryId = str
 FarmerId = str
@@ -80,7 +78,7 @@ class Optimizer:
 
         self.params = params
         self.output = Printer(width=params.print_width, enabled=params.verbose)
-        
+
         self._print_optimizer_params()
 
         self.instance = instance
@@ -100,11 +98,7 @@ class Optimizer:
 
         self._original_hist_sets = {
             intermediary.id: (
-                tuple(
-                    frozenset(hist_set)
-                    for hist_set in intermediary.hist_sets
-                )
-                or (frozenset(),)
+                tuple(frozenset(hist_set) for hist_set in intermediary.hist_sets) or (frozenset(),)
             )
             for intermediary in self.instance.intermediaries
         }
@@ -163,9 +157,7 @@ class Optimizer:
             self._calc_dominance() if self.options.dominance_constraints else []
         )
 
-        self.intermediary_set_to_cost = (
-            self._initial_intermediary_set_to_cost.copy()
-        )
+        self.intermediary_set_to_cost = self._initial_intermediary_set_to_cost.copy()
         self.route_by_farmer_ids_set = {}
 
         # reset solver state
@@ -353,7 +345,8 @@ class Optimizer:
                     model.addConstr(
                         intermediary_profit_vars[intermediary.id]
                         <= intermediary_matched[intermediary.id]
-                        * intermediary.capacity * self.instance.fruit_price_per_ton
+                        * intermediary.capacity
+                        * self.instance.fruit_price_per_ton
                     )
             else:
                 for intermediary in self.instance.intermediaries:
@@ -848,9 +841,7 @@ class Optimizer:
                 )
         else:
             for intermediary in self.instance.intermediaries:
-                model.addConstr(
-                    -1 + mu[intermediary.id] - lamb[intermediary.id] <= 0
-                )
+                model.addConstr(-1 + mu[intermediary.id] - lamb[intermediary.id] <= 0)
         # dual constraint 3: corresponds to intermediary_set_prob_vars in primal
         model.addConstrs(
             -self.intermediary_set_to_cost[intermediary_set]
@@ -910,7 +901,8 @@ class Optimizer:
             # dual constraint corresponding to paved_distance_penalty variable in primal
             model.addConstr(
                 gp.quicksum(
-                    gamma[farmer.id] * (farmer.paved_to_mill > self.PAVED_THRESHOLD)
+                    gamma[farmer.id]
+                    * (farmer.paved_to_mill > self.PAVED_THRESHOLD)
                     * farmer.quantity
                     for farmer in self.instance.farmers
                 )
@@ -1024,7 +1016,6 @@ class Optimizer:
 
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool:
         return value > self.best_lb + tolerance
-
 
     def record_summary(self):
         self.instance_summary.lower_bounds.append(self.best_lb)
@@ -1188,18 +1179,15 @@ class Optimizer:
                     frozenset(
                         farmer.id
                         for farmer in self.instance.farmers
-                        if farmer.intermediary_id
-                        == intermediary.id
+                        if farmer.intermediary_id == intermediary.id
                     ),
                 )
-                for intermediary
-                in self.instance.intermediaries
+                for intermediary in self.instance.intermediaries
             }
         else:
             self.active_hist_sets = {
                 intermediary_id: hist_sets
-                for intermediary_id, hist_sets
-                in self._original_hist_sets.items()
+                for intermediary_id, hist_sets in self._original_hist_sets.items()
             }
 
     def _calc_dominance(self) -> list[tuple[str, str]]:
@@ -1285,10 +1273,10 @@ class Optimizer:
             if self.params.vrp_mode == "exact":
                 matching = self.vrp_solver.solve(n_trucks, n_trucks)
                 cost = matching.cost
-                
+
             elif self.params.vrp_mode == "approximate":
                 cost = (
-                    min_cost_matching.cost 
+                    min_cost_matching.cost
                     + (n_trucks - min_trucks) * self.instance.truck_fixed_cost
                 )
             else:
@@ -1338,14 +1326,16 @@ class Optimizer:
         """
         n_trucks = len(intermediary_set)
         vrp_cost = self.routing_cost_by_truck_count[n_trucks]
-        het_costs = sum(self.params.het_costs[intermediary_id] for intermediary_id in intermediary_set)
+        het_costs = sum(
+            self.params.het_costs[intermediary_id] for intermediary_id in intermediary_set
+        )
         return vrp_cost + het_costs
 
     def _verify_farmer_distances(self):
         for farmer in self.instance.farmers:
             if farmer.paved_to_mill is None or farmer.dirt_to_mill is None:
                 raise RuntimeError("Farmer distances not calculated.")
-            
+
     def _print_optimizer_params(self) -> None:
         self.output.section("Optimizer Parameters")
 

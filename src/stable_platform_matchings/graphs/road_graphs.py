@@ -1,6 +1,6 @@
 from collections.abc import Hashable
 from itertools import combinations
-from typing import TypeAlias, cast, Any
+from typing import Any, TypeAlias, cast
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -10,6 +10,7 @@ from matplotlib.lines import Line2D
 from shapely.geometry import Point
 
 GraphNode: TypeAlias = Hashable
+
 
 class RoadGraph:
     DIRT_FACTOR = 4
@@ -224,11 +225,7 @@ class RoadGraph:
                 break
 
     def build_tree(
-        self, 
-        all_ids: list[object], 
-        all_stops: list[object], 
-        root: str, 
-        plot=True
+        self, all_ids: list[object], all_stops: list[object], root: str, plot=True
     ) -> tuple[nx.Graph, list]:
         """
         Calculates an approximation to the steiner tree, returns the tree and
@@ -327,10 +324,10 @@ class RoadGraph:
         return T, root_edges
 
     def plot_graph(
-        self, 
-        subgraph: nx.MultiDiGraph, 
+        self,
+        subgraph: nx.MultiDiGraph,
         figsize: tuple[int, int] = (6, 6),
-        options: dict[str, Any] | None = None
+        options: dict[str, Any] | None = None,
     ) -> None:
         """
         Plots the provided subgraph.
@@ -341,14 +338,16 @@ class RoadGraph:
                 plotting options such as figure size and save path. defaults to None.
         """
 
-        plt.rcParams.update({
-            "font.size": 10,
-            "axes.labelsize": 10,
-            "axes.titlesize": 10,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-            "legend.fontsize": 9,
-        })
+        plt.rcParams.update(
+            {
+                "font.size": 10,
+                "axes.labelsize": 10,
+                "axes.titlesize": 10,
+                "xtick.labelsize": 9,
+                "ytick.labelsize": 9,
+                "legend.fontsize": 9,
+            }
+        )
 
         if options is None:
             options = {}

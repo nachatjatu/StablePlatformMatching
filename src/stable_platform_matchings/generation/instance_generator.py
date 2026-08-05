@@ -1,7 +1,8 @@
 import json
 import pickle
-
 from pathlib import Path
+from typing import cast
+
 import numpy as np
 import numpy.typing as npt
 import osmnx as ox
@@ -11,11 +12,10 @@ from pyproj import Transformer
 from scipy.interpolate import interp1d
 from scipy.special import gammaln, logsumexp
 from scipy.stats import gaussian_kde
-from typing import cast
 
-from ..graphs.road_graphs import RoadGraph
 from ..domain.entities import Farmer, Intermediary, Mill
 from ..domain.instance import Instance
+from ..graphs.road_graphs import RoadGraph
 
 INDO_CRS = "EPSG:23867"  # Indonesia projected CRS
 LL_CRS = "EPSG:4326"  # WGS84 Lat/Lon
@@ -29,7 +29,7 @@ FALLBACK_ALPHA = 0.3
 DEFAULT_MILL = {
     "mill_id": "MILL",
     "location": [-0.682643, 102.501522],
-}  
+}
 
 DEFAULT_KDE_BANDWIDTH_FACTOR = 0.2
 KDE_DIST_BUFFER = 10000
@@ -44,7 +44,7 @@ class InstanceGenerator:
 
     Attributes:
         self.xy_to_ll (Transformer): transforms points in projected CRS to lat/lon format.
-            to use this, call `self.xy_to_ll.transform()`. note that points are returned in 
+            to use this, call `self.xy_to_ll.transform()`. note that points are returned in
             Cartesian format, that is (lon/lat).
         self.ll_to_xy (Transformer): transforms points in lat/lon format to projected CRS.
             note that points are inputted in Cartesian format, that is (lon/lat).
@@ -57,7 +57,7 @@ class InstanceGenerator:
         self.graph (RoadGraph): a RoadGraph of the platform road network.
         self.bbox_m (npt.NDArray[np.float64]): a bounding box of the platform road network.
         self.grid_coords (npt.NDArray[np.float64]): a stacked array of grid coordinates.
-        
+
         self.intermediary_spatial_kde (gaussian_kde):
         self.farmer_spatial_kde (gaussian_kde):
         self.gamma_lookups (dict[str, interp1d]):
@@ -82,33 +82,34 @@ class InstanceGenerator:
 
     def __init__(
         self,
-        farmers_full_csv_path: Path,  
-        farmers_14_csv_path: Path, 
-        intermediaries_csv_path: Path,  
-        graph_pkl_path: Path,  
+        farmers_full_csv_path: Path,
+        farmers_14_csv_path: Path,
+        intermediaries_csv_path: Path,
+        graph_pkl_path: Path,
         alpha_json_path: Path,
-        sigmas_json_path: Path
+        sigmas_json_path: Path,
     ) -> None:
         """
         Initializes the instance generator.
 
         Args:
-            farmers_full_csv_path (Path): Path to a .csv file containing historical farmer pickup data
-                with columns `farmer_id`, `intermediary_id`, `quantity`, `date`, `intermediary_lat`,
-                `intermediary_lon`, `intermediary_x`, `intermediary_y`, `farmer_lat`, `farmer_lon`,
-                `farmer_x`, `farmer_y`, `distance`. note that x,y columns are in local projected CRS.
+            farmers_full_csv_path (Path): Path to a .csv file containing historical farmer pickup 
+                data with columns `farmer_id`, `intermediary_id`, `quantity`, `date`, 
+                `intermediary_lat`, `intermediary_lon`, `intermediary_x`, `intermediary_y`, 
+                `farmer_lat`, `farmer_lon`, `farmer_x`, `farmer_y`, `distance`. 
+                note that x,y columns are in local projected CRS.
             farmers_14_csv_path (Path): Path to a .csv file containing 14 days of historical farmer
                 pickup data in the same format as `farmers_full_csv_path`.
             intermediaries_csv_path (Path): Path to a .csv file containing intermediary information
                 with columns `intermediary_id`, `intermediary_lat`, `intermediary_lon`,
-                `intermediary_x`, `intermediary_y`. note that x,y columns are in local projected CRS.
-            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the 
+                `intermediary_x`, `intermediary_y`. note that x,y columns are in local CRS.
+            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the
                 covered platform region, in this case an area in Indonesia.
-            alpha_json_path (Path): Path to a .json file containing a single calibrated alpha parameter 
+            alpha_json_path (Path): Path to a .json file containing a single calibrated parameter
                 value for weighting 2D global farmer density versus 1D distance density.
             sigmas_json_path (Path): Path to a .json file containing calibrated sigma parameter
                 values for controlling sequential clustering during farmer network generation. each
-                intermediary ID (str) is associated with a sigma value (float).        
+                intermediary ID (str) is associated with a sigma value (float).
         """
 
         # CRS transformers
@@ -139,7 +140,6 @@ class InstanceGenerator:
             self.alpha = json.load(f)
         with open(sigmas_json_path, mode="r", encoding="utf-8") as f:
             self.sigmas = json.load(f)
-        
 
         # precompute farmer spatial priors on grid
         p_spatial = self.farmer_spatial_kde.evaluate(self.grid_coords)
@@ -152,7 +152,8 @@ class InstanceGenerator:
 
         counts_df = (
             self.farmers_full_df.groupby(["intermediary_id", "date"])
-            .size().reset_index(name="count")
+            .size()
+            .reset_index(name="count")
         )
         self.hist_n_farmers = counts_df.groupby("intermediary_id")["count"].apply(list).to_dict()
 
@@ -169,11 +170,7 @@ class InstanceGenerator:
         self.calendar_df = pd.DataFrame()
         self.cycle_length = CYCLE_LENGTH
 
-    def gen_intermediaries(
-        self, 
-        n_intermediaries: int, 
-        seed: int
-    ) -> None:
+    def gen_intermediaries(self, n_intermediaries: int, seed: int) -> None:
         """
         Initializes a set of platform intermediaries using KDE sampling.
 
@@ -206,7 +203,7 @@ class InstanceGenerator:
                 if intermediary_id not in names:
                     names.add(intermediary_id)
                     break
-            
+
             intermediary_type = rng.choice(representative_types)
 
             # rejection sampling for locations within bounding box
@@ -231,15 +228,15 @@ class InstanceGenerator:
         self.intermediaries = intermediaries
 
     def gen_farmer_xys(
-        self, 
-        intermediary_xy: tuple[float, float], 
-        intermediary_type: str, 
-        n_farmers: int, 
-        rng: np.random.Generator, 
-        sigma: float
+        self,
+        intermediary_xy: tuple[float, float],
+        intermediary_type: str,
+        n_farmers: int,
+        rng: np.random.Generator,
+        sigma: float,
     ) -> list[npt.NDArray[np.float64]]:
         """
-        Given an intermediary, generates multiple farmer coordinates according to 
+        Given an intermediary, generates multiple farmer coordinates according to
         that intermediary's type and location.
 
         Args:
@@ -247,15 +244,14 @@ class InstanceGenerator:
             intermediary_type (str): the intermediary's representative type ID.
             n_farmers (int): number of farmers to be generated.
             rng (np.random.Generator): RNG for reproducibility.
-            sigma (float): clustering weight. 
+            sigma (float): clustering weight.
 
         Returns:
-            list[npt.NDArray[np.float64]]: a list of farmer coordinates corresponding to 
-                points in the spatial grid.  
+            list[npt.NDArray[np.float64]]: a list of farmer coordinates corresponding to
+                points in the spatial grid.
         """
 
         grid_coords_t = self.grid_coords.T
-
 
         # get base log probability density
         log_p_base = self._compute_log_base_grid_prior(
@@ -264,14 +260,14 @@ class InstanceGenerator:
             alpha=self.alpha,
         )
 
-        sigma_sq_2 = 2 * (sigma ** 2)
+        sigma_sq_2 = 2 * (sigma**2)
 
         # generate each farmer location and accumulate clustering influence
         locs = []
         accumulated_exponential_kernels = np.zeros(len(grid_coords_t))
         for k in range(n_farmers):
             if k == 0:
-                log_p_cond = log_p_base # start with base probability
+                log_p_cond = log_p_base  # start with base probability
             else:
                 # bayesian update: clustering influence (add in log space)
                 log_local_factor = np.log(accumulated_exponential_kernels + TOL) - np.log(k)
@@ -292,13 +288,10 @@ class InstanceGenerator:
         return locs
 
     def gen_base_schedule(
-        self, 
-        cycle_length: int, 
-        farmer_rngs: dict[str, np.random.Generator], 
-        scale: float
+        self, cycle_length: int, farmer_rngs: dict[str, np.random.Generator], scale: float
     ) -> pd.DataFrame:
         """
-        Generates a base pickup schedule of length `cycle_length` days. 
+        Generates a base pickup schedule of length `cycle_length` days.
 
         Args:
             cycle_length (int): how many days in one pickup cycle, e.g. 14 days?
@@ -318,11 +311,11 @@ class InstanceGenerator:
             # get intermediary data
             intermediary_data = self.intermediaries[intermediary_id]
             intermediary_type = intermediary_data["type"]
-            intermediary_xy =  intermediary_data["xy"]
+            intermediary_xy = intermediary_data["xy"]
             intermediary_sigma = self.sigmas.get(intermediary_type, FALLBACK_SIGMA)
 
             for cycle_phase in range(cycle_length):
-                # sample some empirical count, scale it, 
+                # sample some empirical count, scale it,
                 # and perform stochastic rounding if not integer
                 empirical_count = rng.choice(self.hist_n_farmers[intermediary_type])
                 raw_count = empirical_count * scale
@@ -334,7 +327,7 @@ class InstanceGenerator:
                     intermediary_type=intermediary_type,
                     n_farmers=n_farmers,
                     rng=rng,
-                    sigma=intermediary_sigma
+                    sigma=intermediary_sigma,
                 )
 
                 # sample farmer quantities from empirical historical distribution
@@ -367,22 +360,22 @@ class InstanceGenerator:
         return pd.DataFrame(synth_farmers)
 
     def gen_calendar(
-        self, 
-        seed: int, 
-        n_cycles: int, 
-        scale: float = 1.0, 
+        self,
+        seed: int,
+        n_cycles: int,
+        scale: float = 1.0,
         cycle_length: int = CYCLE_LENGTH,
-        buffer_cycles: int = 1
+        buffer_cycles: int = 1,
     ):
         """
-        Generates a calendar of farmer pickups from a base schedule. 
+        Generates a calendar of farmer pickups from a base schedule.
 
         Args:
             seed (int): seed for reproducibility.
             n_cycles (int): number of cycles to generate.
-            scale (float, optional): a scaling factor to be applied to farmer counts. 
+            scale (float, optional): a scaling factor to be applied to farmer counts.
                 defaults to 1.0.
-            cycle_length (int, optional): the length of one cycle, in days. 
+            cycle_length (int, optional): the length of one cycle, in days.
                 defaults to CYCLE_LENGTH.
             buffer_cycles (int, optional): used to avoid edge effects from applying random offsets
                 to the start and end of the calendar. defaults to 1.
@@ -433,9 +426,7 @@ class InstanceGenerator:
         calendar_df = pd.DataFrame(calendar)
 
         # sample random day offsets to perturb pickups
-        calendar_df["offset"] = calendar_rng.choice(
-            self.hist_offsets, size=len(calendar_df)
-        )
+        calendar_df["offset"] = calendar_rng.choice(self.hist_offsets, size=len(calendar_df))
         calendar_df["day"] = calendar_df["nominal_day"] + calendar_df["offset"]
 
         # discard start and end to avoid edge effects
@@ -446,15 +437,14 @@ class InstanceGenerator:
         calendar_df = self._apply_random_inactivity(calendar_df, inactivity_rng)
 
         # scale quantities
-        calendar_df["scaled_quantity"] = (
-            calendar_df.groupby(["day", "intermediary_id"])["quantity"]
-            .transform(
-                lambda quantities: self._cap_quantities(
-                    quantities.to_numpy(), 
-                    maximum_capacity=MAX_CAPACITY, 
-                    minimum_quantity=MIN_QUANTITY, 
-                    precision=1
-                )
+        calendar_df["scaled_quantity"] = calendar_df.groupby(["day", "intermediary_id"])[
+            "quantity"
+        ].transform(
+            lambda quantities: self._cap_quantities(
+                quantities.to_numpy(),
+                maximum_capacity=MAX_CAPACITY,
+                minimum_quantity=MIN_QUANTITY,
+                precision=1,
             )
         )
 
@@ -479,7 +469,7 @@ class InstanceGenerator:
         Args:
             instance_id (str): ID associated with this instance.
             day (int): the day number to choose in the synthetic calendar.
-            n_hist_sets (int, optional): the number of historical pickups to consider. 
+            n_hist_sets (int, optional): the number of historical pickups to consider.
                 defaults to 1.
 
         Raises:
@@ -521,10 +511,10 @@ class InstanceGenerator:
 
             farmers.append(
                 Farmer(
-                    id=farmer_id, 
-                    location=farmer_location, 
-                    quantity=farmer_quantity, 
-                    intermediary_id=intermediary_id
+                    id=farmer_id,
+                    location=farmer_location,
+                    quantity=farmer_quantity,
+                    intermediary_id=intermediary_id,
                 )
             )
 
@@ -532,8 +522,7 @@ class InstanceGenerator:
 
         # get historical observations in `cycle_length`-day increments
         hist_days = {
-            day - cycle_number * self.cycle_length 
-            for cycle_number in range(1, n_hist_sets + 1)
+            day - cycle_number * self.cycle_length for cycle_number in range(1, n_hist_sets + 1)
         }
         hist_df = self.calendar_df.loc[self.calendar_df["day"].isin(hist_days)].copy()
         hist_days_sorted = sorted(hist_days)
@@ -543,9 +532,8 @@ class InstanceGenerator:
         for intermediary_id, intermediary_data in self.intermediaries.items():
             hist_sets = []
             for historical_day in hist_days_sorted:
-                mask = (
-                    (hist_df["day"] == historical_day)
-                    & (hist_df["intermediary_id"] == intermediary_id)
+                mask = (hist_df["day"] == historical_day) & (
+                    hist_df["intermediary_id"] == intermediary_id
                 )
 
                 farmer_ids_hist = cast(pd.Series, hist_df.loc[mask, "farmer_id"])
@@ -562,16 +550,14 @@ class InstanceGenerator:
                 # historical schedule with no available farmers.
                 hist_sets.append(hist_set)
 
-            intermediary_location = (
-                intermediary_data["ll"][0], intermediary_data["ll"][1]
-            )
+            intermediary_location = (intermediary_data["ll"][0], intermediary_data["ll"][1])
 
             intermediaries.append(
                 Intermediary(
                     id=intermediary_id,
                     capacity=MAX_CAPACITY,
                     location=intermediary_location,
-                    hist_sets=hist_sets
+                    hist_sets=hist_sets,
                 )
             )
 
@@ -580,10 +566,7 @@ class InstanceGenerator:
 
         # construct instance, attach graph, and return
         instance = Instance(
-            instance_id=instance_id,
-            farmers=farmers,
-            intermediaries=intermediaries,
-            mill=mill
+            instance_id=instance_id, farmers=farmers, intermediaries=intermediaries, mill=mill
         )
 
         instance.set_graph(self.graph)
@@ -591,18 +574,17 @@ class InstanceGenerator:
         return instance
 
     def _init_graph_and_bbox(
-        self, 
-        graph_pkl_path: Path
+        self, graph_pkl_path: Path
     ) -> tuple[RoadGraph, npt.NDArray[np.float64]]:
         """
         Initializes graph and bounding box data for the instance.
 
         Args:
-            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the 
+            graph_pkl_path (Path): Path to a .pickle file storing a networkx graph for the
                 covered platform region.
-        
+
         Returns:
-            tuple[RoadGraph, npt.NDArray[np.float64]]: a tuple whose first argument is the RoadGraph 
+            tuple[RoadGraph, npt.NDArray[np.float64]]: a tuple whose first argument is the RoadGraph
                 for the road network and second argument is the corresponding bounding box.
         """
         with open(graph_pkl_path, "rb") as f:
@@ -615,20 +597,16 @@ class InstanceGenerator:
 
     def _init_intermediary_kde(self) -> gaussian_kde:
         """Initializes Gaussian KDE for global intermediary spatial density."""
-        coords = (
-            self.intermediaries_df
-            .drop_duplicates(["intermediary_id"])
-            [["intermediary_x", "intermediary_y"]].T
-        )
+        coords = self.intermediaries_df.drop_duplicates(["intermediary_id"])[
+            ["intermediary_x", "intermediary_y"]
+        ].T
         return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
 
     def _init_farmer_kde(self) -> gaussian_kde:
         """Initializes Gaussian KDE for global farmer spatial density."""
-        coords = (
-            self.farmers_full_df
-            .drop_duplicates(["farmer_x", "farmer_y"])
-            [["farmer_x", "farmer_y"]].T
-        )
+        coords = self.farmers_full_df.drop_duplicates(["farmer_x", "farmer_y"])[
+            ["farmer_x", "farmer_y"]
+        ].T
         return gaussian_kde(coords, bw_method=DEFAULT_KDE_BANDWIDTH_FACTOR)
 
     def _init_gamma_lookups(self) -> dict[str, interp1d]:
@@ -637,12 +615,11 @@ class InstanceGenerator:
 
         Returns:
             dict[str, interp1d]: a dict mapping intermediary IDs to a interpolation object
-                approximating a smoothed distance distribution.  
+                approximating a smoothed distance distribution.
         """
         # get historical distances by int
         intermediary_to_dists = (
-            self.farmers_full_df
-            .drop_duplicates(["intermediary_id", "farmer_x", "farmer_y"]) 
+            self.farmers_full_df.drop_duplicates(["intermediary_id", "farmer_x", "farmer_y"])
             .groupby("intermediary_id")["distance"]
             .apply(np.array)
             .to_dict()
@@ -687,10 +664,8 @@ class InstanceGenerator:
         Returns:
             pd.DataFrame: a DataFrame of historical date offsets.
         """
-        def _compute_offsets(
-            group: pd.DataFrame, 
-            period: int = 14
-        ) -> pd.DataFrame:
+
+        def _compute_offsets(group: pd.DataFrame, period: int = 14) -> pd.DataFrame:
             """Computes perturbations from a periodic cycle."""
             group = group.sort_values("date").copy()
             dates = pd.to_datetime(group["date"]).dt.normalize()
@@ -708,8 +683,7 @@ class InstanceGenerator:
 
         # compute gaps between pickups
         pickup_gaps = (
-            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"])
-            .date.diff().dt.days
+            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"]).date.diff().dt.days
         )
 
         # filter out excessively long pickup gaps (these represent breaks)
@@ -717,21 +691,19 @@ class InstanceGenerator:
 
         # compute historical offsets
         hist_offsets = (
-            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"], group_keys=False)
-            .apply(_compute_offsets)
+            pickups_df.groupby(["intermediary_id", "farmer_x", "farmer_y"], group_keys=False).apply(
+                _compute_offsets
+            )
         )["delta"]
 
         # return truncated offsets (to avoid collisions with competing 7-day offsets)
         return hist_offsets[hist_offsets.abs() < 7]
 
     def _compute_log_base_grid_prior(
-        self, 
-        intermediary_xy: tuple[float, float], 
-        intermediary_type: str, 
-        alpha: float
+        self, intermediary_xy: tuple[float, float], intermediary_type: str, alpha: float
     ) -> npt.NDArray[np.float64]:
         """
-        Constructs a base farmer location probability density for an intermediary, 
+        Constructs a base farmer location probability density for an intermediary,
         taking into account global farmer density as well as that intermediary's "distance"
         preferences. Returns log density for numerical stability. Uses Euclidean norm for distance.
 
@@ -755,15 +727,15 @@ class InstanceGenerator:
         min_radius = RES / 2
         radius_correction = np.maximum(dists, min_radius)
         p_dist_grid = p_dist_raw / radius_correction
-        p_dist_grid = p_dist_grid / (p_dist_grid.sum() + TOL) # normalize
+        p_dist_grid = p_dist_grid / (p_dist_grid.sum() + TOL)  # normalize
 
         # get farmer spatial prior over same grid support
         p_farmer_grid = self.p_spatial
-        p_farmer_grid = p_farmer_grid / (p_farmer_grid.sum() + TOL) # normalize
+        p_farmer_grid = p_farmer_grid / (p_farmer_grid.sum() + TOL)  # normalize
 
         # combine log probabilities, giving the global farmer density an `alpha` weight.
         log_p_base = np.log(p_dist_grid + TOL) + alpha * np.log(p_farmer_grid + TOL)
-        log_p_base -= logsumexp(log_p_base) # normalize in log space
+        log_p_base -= logsumexp(log_p_base)  # normalize in log space
 
         return log_p_base
 
@@ -879,15 +851,16 @@ class InstanceGenerator:
         if len(inactivity_rates) == 0:
             return calendar_df.copy()
 
-
         inactive_pairs = []
         for day in sorted(calendar_df["day"].unique()):
             # sample some inactivity rate
             inactivity_rate = float(rng.choice(inactivity_rates))
 
             n_inactive = int(
-                np.clip(np.round(inactivity_rate * n_intermediaries),
-                    0, n_intermediaries,
+                np.clip(
+                    np.round(inactivity_rate * n_intermediaries),
+                    0,
+                    n_intermediaries,
                 )
             )
 
@@ -900,7 +873,7 @@ class InstanceGenerator:
                 size=n_inactive,
                 replace=False,
             )
-            
+
             inactive_pairs.extend((day, intermediary_id) for intermediary_id in inactive_ids)
 
         if not inactive_pairs:

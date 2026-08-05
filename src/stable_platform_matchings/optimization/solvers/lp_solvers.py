@@ -86,9 +86,7 @@ class GurobiTSPSolver:
 
         # Make sure that if any farmer is picked up, then used is equal to one
         for farmer in self.instance.farmers:
-            model.addConstr(
-                used >= farmer_vars[farmer.id], "farmer_used"
-            )
+            model.addConstr(used >= farmer_vars[farmer.id], "farmer_used")
 
         # Make sure that at least one farmer is picked up
         model.addConstr(
@@ -243,7 +241,7 @@ class GurobiVRPSolver:
         for intermediary_id in intermediary_ids:
             model.addConstr(
                 gp.quicksum(
-                    matching_vars[intermediary_id, farmer_id] 
+                    matching_vars[intermediary_id, farmer_id]
                     for farmer_id in self.instance.farmer_by_id
                 )
                 >= used[intermediary_id],
@@ -332,4 +330,3 @@ class GurobiVRPSolver:
             raise ValueError(f"Objective mismatch: {total_cost} != {alt_cost}")
 
         return matching
-

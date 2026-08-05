@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from typing import Literal, Mapping
-from ..domain.instance import Instance
 from numbers import Real
+from typing import Literal, Mapping
+
+from ..domain.instance import Instance
 
 Backend = Literal["gurobi"]
 VRPMode = Literal["exact", "approximate"]
 SolverStrategy = Literal["exact", "heuristic_optimized", "heuristic_unoptimized"]
+
 
 @dataclass(frozen=True, slots=True)
 class OptimizerParams:
@@ -29,15 +31,11 @@ class OptimizerParams:
 
         for intermediary_id, cost in self.het_costs.items():
             if not isinstance(cost, Real) or isinstance(cost, bool):
-                raise TypeError(
-                    f"het_costs[{intermediary_id!r}] must be numeric"
-                )
+                raise TypeError(f"het_costs[{intermediary_id!r}] must be numeric")
 
         for intermediary_id, epsilon in self.epsilons.items():
             if not isinstance(epsilon, Real) or isinstance(epsilon, bool):
-                raise TypeError(
-                    f"epsilon[{intermediary_id!r}] must be numeric"
-                )
+                raise TypeError(f"epsilon[{intermediary_id!r}] must be numeric")
 
     def validate(self, instance: Instance) -> None:
         intermediary_ids = {intermediary.id for intermediary in instance.intermediaries}
@@ -62,39 +60,27 @@ class OptimizerParams:
             )
         # only support Gurobi for now
         if self.backend != "gurobi":
-            raise ValueError(
-                f"Unsupported backend: {self.backend!r}"
-            )
+            raise ValueError(f"Unsupported backend: {self.backend!r}")
         # only exact and approximate VRP supported
         if self.vrp_mode not in {"exact", "approximate"}:
-            raise ValueError(
-                f"Unsupported VRP mode: {self.vrp_mode!r}"
-            )
+            raise ValueError(f"Unsupported VRP mode: {self.vrp_mode!r}")
         # check that print_width is positive
         if self.print_width <= 0:
             raise ValueError("print_width must be positive.")
-        
+
         # validate heterogenous costs
         for intermediary_id, cost in self.het_costs.items():
             if not isinstance(cost, int | float):
-                raise TypeError(
-                    f"het_costs[{intermediary_id!r}] must be numeric."
-                )
+                raise TypeError(f"het_costs[{intermediary_id!r}] must be numeric.")
 
             if cost + instance.truck_fixed_cost < 0:
-                raise ValueError(
-                    f"Total intermediary cost is negative for {intermediary_id!r}."
-                )
+                raise ValueError(f"Total intermediary cost is negative for {intermediary_id!r}.")
         # validate epsilon
         for intermediary_id, epsilon in self.epsilons.items():
             if not isinstance(epsilon, int | float):
-                raise TypeError(
-                    f"epsilon[{intermediary_id!r}] must be numeric."
-                )
+                raise TypeError(f"epsilon[{intermediary_id!r}] must be numeric.")
             if epsilon < 0:
-                raise ValueError(
-                    f"epsilon[{intermediary_id!r}] must be nonnegative."
-                )
+                raise ValueError(f"epsilon[{intermediary_id!r}] must be nonnegative.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,18 +94,14 @@ class SolverOptions:
 
     def __post_init__(self) -> None:
 
-        value = getattr(self, "strategy")
+        value = self.strategy
 
         if type(value) is not str:
-            raise TypeError(
-                f"strategy must be str, got {type(value).__name__}"
-            )
+            raise TypeError(f"strategy must be str, got {type(value).__name__}")
 
         if value not in {"exact", "heuristic_optimized", "heuristic_unoptimized"}:
-            raise ValueError(
-                f"Unsupported strategy: {value}"
-            )
-        
+            raise ValueError(f"Unsupported strategy: {value}")
+
         for name in (
             "structured_farmer_payments",
             "dominance_constraints",
@@ -130,9 +112,7 @@ class SolverOptions:
             value = getattr(self, name)
 
             if type(value) is not bool:
-                raise TypeError(
-                    f"{name} must be bool, got {type(value).__name__}"
-                )
+                raise TypeError(f"{name} must be bool, got {type(value).__name__}")
 
     def validate_for_strategy(self, strategy: str) -> None:
         if strategy == "exact" and self.pay_unmatched:
