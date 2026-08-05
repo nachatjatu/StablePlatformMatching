@@ -22,10 +22,15 @@ class Printer:
     def section(self, title: str, fill: str = "=") -> None:
         """Print a major centered section heading."""
         self._print()
+        self._print()
         self._print(f" {title} ".center(self.width, fill))
 
     def subsection(self, title: str, fill: str = "-") -> None:
         """Print a centered heading within the current section."""
+        self._print(f" {title} ".center(self.width, fill))
+
+    def subsubsection(self, title: str, fill: str = ".") -> None:
+        """Print a centered heading within the current subsection."""
         self._print(f" {title} ".center(self.width, fill))
 
     def message(self, message: str, indent: int = 0) -> None:

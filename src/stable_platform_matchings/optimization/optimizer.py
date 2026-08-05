@@ -41,10 +41,11 @@ class Optimizer:
     """
 
     # Tolerance for row generation
-    BOUND_TOL = 1.0
-    BRANCH_SCORE_TOL = 1e-9
-    INCUMBENT_TOL = 1.0
+    BRANCH_PRUNE_TOL = 1e-6
+    GLOBAL_LB_UPDATE_TOL = 1.0
     PRIMARY_OBJECTIVE_TOL = 1.0
+
+    BRANCH_SCORE_TOL = 1e-9
     CUT_TOL = 1.0
     COLUMN_TOL = 1.0
     INT_TOL = 1e-9
@@ -750,7 +751,7 @@ class Optimizer:
         solution_summary.max_farmer_welfare_solution = max_farmer_welfare_solution
 
         # print out summary of solutions
-        self.output.subsection(f"Primal Result: {sol_type.replace('_', ' ').title()}")
+        self.output.subsection(f"Primal Solve: {sol_type.replace('_', ' ').title()}")
         self.output.metric("Platform-profit objective", optimal_platform_profit)
         self.output.metric("Intermediary-welfare objective", max_intermediary_welfare)
         self.output.metric("Farmer-welfare objective", max_farmer_welfare)
@@ -1052,11 +1053,9 @@ class Optimizer:
 
         return DualSolution(platform_profit=platform_profit, n_added_cols=n_added_cols)
 
-    def branch_can_improve(self, upper_bound: float) -> bool:
-        return upper_bound > self.best_lb + self.BOUND_TOL
+    def exceeds_global_lb(self, value: float, tolerance: float) -> bool:
+        return value > self.best_lb + tolerance
 
-    def improves_incumbent(self, candidate: float) -> bool:
-        return candidate > self.best_lb + self.INCUMBENT_TOL
 
     def record_summary(self):
         self.instance_summary.lower_bounds.append(self.best_lb)
@@ -1296,18 +1295,24 @@ class Optimizer:
         self.output.section("VRP Initialization")
 
         # solve for min cost matchin
+        self.output.subsection("Solving for minimum cost matching")
         min_cost_matching = self.vrp_solver.solve(1, self.n_intermediaries)
         min_trucks = len(min_cost_matching.routes)
 
         self.output.metric("Minimum-cost objective", min_cost_matching.cost)
         self.output.metric("Trucks used", min_trucks, precision=0)
 
-        self.output.subsection(f"Populating matchings using {min_trucks} trucks")
-        self.output.metric("VRP cost", min_cost_matching.cost, precision=0)
+        self.output.blank()
+        self.output.subsection(f"Populating routing costs using at least {min_trucks} trucks")
+        self.output.metric("VRP mode", self.vrp_mode)
+        self.output.blank()
+        self.output.subsubsection(f"Number of Trucks = {min_trucks}")
+        self.output.metric("Cost", min_cost_matching.cost, precision=0)
         routing_cost_by_truck_count = {min_trucks: min_cost_matching.cost}
 
         for n_trucks in range(min_trucks + 1, self.n_intermediaries + 1):
-            self.output.subsection(f"Populating matchings using {n_trucks} trucks")
+            self.output.blank()
+            self.output.subsubsection(f"Number of Trucks = {n_trucks}")
             if self.vrp_mode == "exact":
                 matching = self.vrp_solver.solve(n_trucks, n_trucks)
                 cost = matching.cost
@@ -1322,8 +1327,10 @@ class Optimizer:
             self.output.metric("Cost", cost, precision=0)
             routing_cost_by_truck_count[n_trucks] = cost
 
-        self.output.subsection("Initial Matching Costs")
-        self.output.collection("Cost by truck count", routing_cost_by_truck_count)
+        self.output.section("Initial Routing Costs by Truck Count")
+        self.output.metric("Number of Trucks", "Cost")
+        for n_trucks in routing_cost_by_truck_count:
+            self.output.metric(str(n_trucks), routing_cost_by_truck_count[n_trucks])
 
         return routing_cost_by_truck_count
 

@@ -13,6 +13,8 @@ from scipy.stats import gaussian_kde
 from typing import cast
 
 from ..graphs.road_graphs import RoadGraph
+from ..domain.entities import Farmer, Intermediary, Mill
+from ..domain.instance import Instance
 
 """
 DEFINE GLOBAL CONSTANTS
@@ -482,17 +484,17 @@ class InstanceGenerator:
 
         for row in day_df.itertuples(index=False):
             farmer_id = str(row.farmer_id)
+            farmer_location = (float(row.farmer_lat), float(row.farmer_lon))
+            farmer_quantity = float(row.scaled_quantity)
+            intermediary_id = str(row.intermediary_id)
 
             farmers.append(
-                {
-                    "farmer_id": farmer_id,
-                    "quantity": float(row.scaled_quantity),
-                    "location": (
-                        float(row.farmer_lat),
-                        float(row.farmer_lon),
-                    ),
-                    "intermediary_id": str(row.intermediary_id),
-                }
+                Farmer(
+                    id=farmer_id, 
+                    location=farmer_location, 
+                    quantity=farmer_quantity, 
+                    intermediary_id=intermediary_id
+                )
             )
 
             farmer_ids.add(farmer_id)
@@ -515,7 +517,7 @@ class InstanceGenerator:
         historical_days_sorted = sorted(historical_days)
 
         for intermediary_id, intermediary_data in self.intermediaries.items():
-            routes = []
+            hist_sets = []
 
             for historical_day in historical_days_sorted:
                 mask = (
@@ -528,36 +530,43 @@ class InstanceGenerator:
                     hist_df.loc[mask, "farmer_id"],
                 )
 
-                route = farmer_ids_hist.astype(str).tolist()
+                hist_set = farmer_ids_hist.astype(str).tolist()
 
                 # Route IDs must belong to the farmer universe.
-                route = [farmer_id for farmer_id in route if farmer_id in farmer_ids]
+                hist_set = [farmer_id for farmer_id in hist_set if farmer_id in farmer_ids]
 
                 # Remove accidental duplicates while preserving order.
-                route = list(dict.fromkeys(route))
+                hist_set = list(dict.fromkeys(hist_set))
 
                 # Retain empty routes because they represent an observed
                 # historical schedule with no available farmers.
-                routes.append(route)
+                hist_sets.append(hist_set)
 
-            intermediaries.append(
-                {
-                    "intermediary_id": str(intermediary_id),
-                    "capacity": MAX_CAPACITY,
-                    "location": (
-                        float(intermediary_data["ll"][0]),
-                        float(intermediary_data["ll"][1]),
-                    ),
-                    "routes": routes,
-                }
+            intermediary_location = (
+                float(intermediary_data["ll"][0]), float(intermediary_data["ll"][1])
             )
 
-        return {
-            "instance_id": instance_id,
-            "farmers": farmers,
-            "intermediaries": intermediaries,
-            "mills": [DEFAULT_MILL],
-        }
+            intermediaries.append(
+                Intermediary(
+                    id=str(intermediary_id),
+                    capacity=MAX_CAPACITY,
+                    location=intermediary_location,
+                    hist_sets=hist_sets
+                )
+            )
+
+        mill = Mill(id=DEFAULT_MILL["mill_id"], location=DEFAULT_MILL["location"])
+
+        instance = Instance(
+            instance_id=instance_id,
+            farmers=farmers,
+            intermediaries=intermediaries,
+            mill=mill
+        )
+
+        instance.set_graph(self.G)
+
+        return instance
 
     @staticmethod
     def _cap_quantities(

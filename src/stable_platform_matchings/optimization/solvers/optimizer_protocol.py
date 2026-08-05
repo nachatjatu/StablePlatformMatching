@@ -18,7 +18,9 @@ class OptimizerProtocol(Protocol):
     intermediary_ids: list[str]
 
     INT_TOL: float
-    BRANCH_SCORE_TOL: float
+    BRANCH_PRUNE_TOL = 1e-6
+    GLOBAL_LB_UPDATE_TOL = 1e-6
+    BRANCH_SCORE_TOL = 1e-9
 
     def initialize_branch(self, branch: Branch) -> bool: ...
 
@@ -33,8 +35,6 @@ class OptimizerProtocol(Protocol):
         branch: Branch,
     ) -> DualSolution: ...
 
-    def branch_can_improve(self, upper_bound: float) -> bool: ...
-
-    def improves_incumbent(self, candidate: float) -> bool: ...
+    def exceeds_global_lb(self, value: float, tolerance: float) -> bool: ...
 
     def record_summary(self) -> None: ...

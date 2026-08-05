@@ -32,14 +32,19 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
                 active_branches.append(branch_solution)
 
         if not active_branches:
-            optimizer.best_ub = optimizer.best_lb
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
 
             optimizer.record_summary()
 
-            optimizer.output.section("Search Complete")
-            optimizer.output.status("All branches have been resolved or pruned")
-            optimizer.output.metric("Best objective found", optimizer.best_lb)
-            optimizer.output.status("Heuristic search complete")
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="No unresolved active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
+            )
 
             break
 
@@ -54,27 +59,39 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
         active_branches = [
             branch_solution
             for branch_solution in active_branches
-            if optimizer.branch_can_improve(branch_solution.upper_bound)
+            if optimizer.exceeds_global_lb(branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL)
         ]
 
         if not active_branches:
-            optimizer.best_ub = optimizer.best_lb
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
 
             optimizer.record_summary()
 
-            optimizer.output.section("Search Complete")
-            optimizer.output.status("All branches have been resolved or pruned")
-            optimizer.output.metric("Best objective found", optimizer.best_lb)
-            optimizer.output.status("Heuristic search complete")
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="No unresolved active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
+            )
 
             break
 
-        optimizer.output.subsection("Active Branch Queue")
-        optimizer.output.metric("Branches", len(active_branches), precision=0)
-        optimizer.output.collection(
-            "Upper bounds",
-            [branch_solution.upper_bound for branch_solution in active_branches],
-        )
+        queue_summary = [
+            {
+                "matched": sorted(branch_solution.branch.forced_match),
+                "unmatched": sorted(branch_solution.branch.forced_unmatch),
+                "upper_bound": branch_solution.upper_bound,
+                "can_improve": optimizer.exceeds_global_lb(
+                    branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL
+                ),
+            }
+            for branch_solution in active_branches
+        ]
+
+        optimizer.output.collection("Branch summaries", queue_summary)
 
         # choose max branch using max profit criterion
         max_branch = max(
@@ -89,17 +106,20 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
                 current_max_upper_bound = branch.upper_bound
 
         if current_max_upper_bound < optimizer.best_ub:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
             optimizer.best_ub = current_max_upper_bound
 
             optimizer.record_summary()
 
-            current_gap = (optimizer.best_ub - optimizer.best_lb) / np.abs(optimizer.best_lb)
-
-            optimizer.output.subsection("Global Bound Update")
-            optimizer.output.metric("New upper bound", optimizer.best_ub)
-            optimizer.output.metric("Current gap", current_gap, precision=6)
-            optimizer.output.collection(
-                "Upper-bound history", optimizer.instance_summary.upper_bounds
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Tightened the global upper bound using active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
             )
 
         # pop the max branch from the active branches
@@ -111,8 +131,7 @@ def solve_heuristic(optimizer: OptimizerProtocol, optimize: bool) -> PrimalSolut
         branch_value = max_branch.branch_profits[max_branch.branch_on]
 
         optimizer.output.section(
-            f"Branching on {branch_on} with value = {branch_value:.4f}",
-            fill="-",
+            f"Branching on {branch_on} with value = {branch_value:.4f}"
         )
         optimizer.output.collection(
             "Parent matched",
@@ -174,28 +193,42 @@ def solve_exact(
 
             break
 
-        optimizer.output.subsection("Active Branch Queue")
-        optimizer.output.metric("Branches", len(active_branches), precision=0)
-        optimizer.output.collection(
-            "Upper bounds",
-            [branch_solution.upper_bound for branch_solution in active_branches],
-        )
+        queue_summary = [
+            {
+                "matched": sorted(branch_solution.branch.forced_match),
+                "unmatched": sorted(branch_solution.branch.forced_unmatch),
+                "upper_bound": branch_solution.upper_bound,
+                "can_improve": optimizer.exceeds_global_lb(
+                    branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL
+                ),
+            }
+            for branch_solution in active_branches
+        ]
+
+        optimizer.output.collection("Branch summaries", queue_summary)
 
         active_branches = [
             branch_solution
             for branch_solution in active_branches
-            if optimizer.branch_can_improve(branch_solution.upper_bound)
+            if optimizer.exceeds_global_lb(branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL)
         ]
 
         if not active_branches:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
             optimizer.best_ub = optimizer.best_lb
 
             optimizer.record_summary()
 
-            optimizer.output.section("Search Complete")
-            optimizer.output.status("All branches have been resolved or pruned")
-            optimizer.output.metric("Optimal objective", optimizer.best_lb)
-            optimizer.output.metric("Final gap", 0.0)
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="No unresolved active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
+            )
 
             break
 
@@ -210,16 +243,20 @@ def solve_exact(
                 current_max_upper_bound = branch_solution.upper_bound
 
         if current_max_upper_bound < optimizer.best_ub:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
             optimizer.best_ub = current_max_upper_bound
 
             optimizer.record_summary()
 
-            optimizer.output.subsection("Global Bound Update")
-            optimizer.output.metric("New upper bound", max_branch.upper_bound)
-            optimizer.output.metric(
-                "Current gap",
-                (optimizer.best_ub - optimizer.best_lb) / np.abs(optimizer.best_lb),
-                precision=6,
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Tightened the global upper bound from active branches",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
             )
 
         # pop the max branch from the active branches
@@ -232,7 +269,6 @@ def solve_exact(
 
         optimizer.output.section(
             f"Branching on {branch_on} with value = {branch_value:.4f}",
-            fill="-",
         )
         optimizer.output.collection(
             "Parent matched",
@@ -279,26 +315,34 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     # compute lower bound LB^n using forced solution
     forced_lb_solution = optimizer.solve_primal_for_branch(
         branch, "forced_lower_bound"
-    )  # PrimalSummary
+    ) 
     forced_lb_platform_profit = forced_lb_solution.platform_profit
 
-    optimizer.output.subsection("Forced Lower Bound")
+    optimizer.output.subsection("Lower-Bound Candidate")
     optimizer.output.metric("Objective", forced_lb_platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
     # update global lower bound if forced lower bound is tighter
-    if optimizer.improves_incumbent(forced_lb_platform_profit):
+    if optimizer.exceeds_global_lb(forced_lb_platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL):
+        previous_lb = optimizer.best_lb
+        previous_ub = optimizer.best_ub
+
         optimizer.best_lb = forced_lb_platform_profit
         optimizer.best_lb_set = branch.min_cost_set
         optimizer.best_lb_summary = forced_lb_solution
 
         optimizer.record_summary()
 
-        optimizer.output.status("Found a better lower bound through forcing")
-        optimizer.output.metric("New best lower bound", forced_lb_platform_profit)
-        optimizer.output.metric(
-            "New gap", (optimizer.best_ub - optimizer.best_lb) / np.abs(optimizer.best_lb)
+        print_bound_update(
+            optimizer,
+            title="Global Bound Update",
+            status="Improved the global lower bound through forcing",
+            previous_lb=previous_lb,
+            previous_ub=previous_ub,
+            fill="."
         )
+
+    optimizer.output.blank()
 
     # compute upper bound UB^n using forced solution, LP relaxation
     forced_ub_solution = optimizer.solve_primal_for_branch(branch, "forced_upper_bound")
@@ -308,9 +352,17 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
     # prune branch early if forced upper bound cannot beat existing integer solution
-    if not optimizer.branch_can_improve(forced_ub_solution.platform_profit):
-        optimizer.output.status(
-            "Forced upper bound cannot improve the incumbent within tolerance; pruning branch"
+    can_improve = optimizer.exceeds_global_lb(
+        forced_ub_solution.platform_profit, optimizer.BRANCH_PRUNE_TOL
+    )
+    optimizer.output.metric("Global lower bound", optimizer.best_lb)
+    optimizer.output.metric("Improvement tolerance", optimizer.BRANCH_PRUNE_TOL)
+    optimizer.output.metric("Decision", "Retain" if can_improve else "Prune")  
+    if not can_improve:
+        optimizer.output.message(
+            "Reason: branch upper bound cannot improve on the global lower bound "
+            "within tolerance.",
+            indent=1,
         )
         return BranchSolution(status="stop", branch=branch)
 
@@ -338,9 +390,18 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     optimizer.output.collection("Intermediary probabilities", primal_solution.intermediary_probs)
 
     # prune branch early if primal relaxed solution cannot beat existing integer solution
-    if not optimizer.branch_can_improve(primal_solution.platform_profit):
-        optimizer.output.status(
-            "Primal solution cannot improve the incumbent within tolerance; pruning branch"
+    can_improve = optimizer.exceeds_global_lb(
+        primal_solution.platform_profit, optimizer.BRANCH_PRUNE_TOL
+    )
+    optimizer.output.metric("Global lower bound", optimizer.best_lb)
+    optimizer.output.metric("Improvement tolerance", optimizer.BRANCH_PRUNE_TOL)
+    optimizer.output.metric("Decision", "Retain" if can_improve else "Prune")  
+
+    if not can_improve:
+        optimizer.output.message(
+            "Reason: branch upper bound cannot improve on the global lower bound "
+            "within tolerance.",
+            indent=1,
         )
         return BranchSolution(status="stop", branch=branch)
 
@@ -356,7 +417,12 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
 
     # branch if fractional, update bounds if integral
     if solution_is_integral:
-        if optimizer.improves_incumbent(primal_solution.platform_profit):
+        if optimizer.exceeds_global_lb(
+            primal_solution.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
+        ):
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
             optimizer.best_lb = primal_solution.platform_profit
             optimizer.best_lb_set = frozenset(
                 {
@@ -369,8 +435,14 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
 
             optimizer.record_summary()
 
-            optimizer.output.status("Found a better integral incumbent")
-            optimizer.output.metric("New best lower bound", optimizer.best_lb)
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Improved global lower bound by finding a better feasible solution",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="."
+            )
 
         return BranchSolution(status="integral", branch=branch)
     else:
@@ -408,7 +480,7 @@ def solve_branch_heuristic(
     # compute lower bound LB^n using forced solution
     forced_lb_solution = optimizer.solve_primal_for_branch(branch, "forced_lower_bound")
 
-    optimizer.output.subsection("Forced Lower Bound")
+    optimizer.output.subsection("Lower-Bound Candidate")
     optimizer.output.metric("Objective", forced_lb_solution.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
@@ -418,23 +490,33 @@ def solve_branch_heuristic(
         optimizer.instance_summary.forced_cost = forced_lb_solution.expected_intermediary_costs
 
     # update global lower bound if forced lower bound is tighter
-    if optimizer.improves_incumbent(forced_lb_solution.platform_profit):
+    if optimizer.exceeds_global_lb(
+        forced_lb_solution.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
+    ):
+        previous_lb = optimizer.best_lb
+        previous_ub = optimizer.best_ub
+
         optimizer.best_lb = forced_lb_solution.platform_profit
         optimizer.best_lb_set = branch.min_cost_set
         optimizer.best_lb_summary = forced_lb_solution
 
         optimizer.record_summary()
 
-        optimizer.output.status("Found a better lower bound through forcing")
-        optimizer.output.metric("New best lower bound", forced_lb_solution.platform_profit)
-        optimizer.output.metric(
-            "New gap", (optimizer.best_ub - optimizer.best_lb) / np.abs(optimizer.best_lb)
+        print_bound_update(
+            optimizer,
+            title="Global Bound Update",
+            status="Improved the global lower bound through forcing",
+            previous_lb=previous_lb,
+            previous_ub=previous_ub,
+            fill="."
         )
+
+    optimizer.output.blank()
 
     # compute upper bound UB^n using forced solution, LP relaxation
     forced_ub_solution = optimizer.solve_primal_for_branch(branch, "forced_upper_bound")
 
-    optimizer.output.subsection("Forced Upper Bound")
+    optimizer.output.subsection("Upper-Bound Candidate")
     optimizer.output.metric("Objective", forced_ub_solution.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
@@ -443,10 +525,39 @@ def solve_branch_heuristic(
         optimizer.instance_summary.forced_upper_bound = forced_ub_solution.platform_profit
 
     # prune branch early if forced upper bound cannot beat existing integer solution
-    if not optimizer.branch_can_improve(forced_ub_solution.platform_profit):
-        optimizer.output.status(
-            "Forced upper bound cannot improve the incumbent within tolerance; pruning branch"
+    can_improve = optimizer.exceeds_global_lb(
+        forced_ub_solution.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
+    )
+    optimizer.output.metric("Global lower bound", optimizer.best_lb)
+    optimizer.output.metric("Improvement tolerance", optimizer.GLOBAL_LB_UPDATE_TOL)
+    optimizer.output.metric("Decision", "Retain" if can_improve else "Prune")    
+
+    if not can_improve:
+        optimizer.output.message(
+            "Reason: branch upper bound cannot improve on the global lower bound "
+            "within tolerance.",
+            indent=1,
         )
+        
+        if not branch.forced_match and not branch.forced_unmatch:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
+            optimizer.best_ub = min(
+                optimizer.best_ub,
+                forced_ub_solution.platform_profit,
+            )
+            optimizer.record_summary()
+
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Tightened the global upper bound using root",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+            )
+            
+        
         return BranchSolution(status="stop", branch=branch)
 
     # heuristic: optional optimize flag
@@ -487,3 +598,88 @@ def solve_branch_heuristic(
         branch_profits=intermediary_profits,
         upper_bound=forced_ub_solution.platform_profit,
     )
+
+
+def relative_gap(lower_bound: float, upper_bound: float) -> float:
+    if not np.isfinite(lower_bound) or not np.isfinite(upper_bound):
+        return float("inf")
+
+    denominator = max(abs(lower_bound), 1.0)
+    return max(0.0, upper_bound - lower_bound) / denominator
+
+
+def format_bound_transition(old: float, new: float, precision: int = 3) -> str:
+    def format_value(value: float) -> str:
+        if np.isposinf(value):
+            return "inf"
+        if np.isneginf(value):
+            return "-inf"
+        return f"{value:,.{precision}f}"
+
+    return f"{format_value(old)} -> {format_value(new)}"
+
+
+def print_bound_update(
+    optimizer,
+    *,
+    title: str,
+    status: str,
+    previous_lb: float,
+    previous_ub: float,
+    fill: str="-"
+) -> None:
+    new_lb = optimizer.best_lb
+    new_ub = optimizer.best_ub
+
+    previous_abs_gap = (
+        previous_ub - previous_lb
+        if np.isfinite(previous_lb) and np.isfinite(previous_ub)
+        else float("inf")
+    )
+    new_abs_gap = (
+        new_ub - new_lb
+        if np.isfinite(new_lb) and np.isfinite(new_ub)
+        else float("inf")
+    )
+
+    previous_rel_gap = relative_gap(previous_lb, previous_ub)
+    new_rel_gap = relative_gap(new_lb, new_ub)
+
+    optimizer.output.blank()
+    optimizer.output.subsection(title, fill=fill)
+    optimizer.output.status(status)
+    optimizer.output.metric(
+        "Lower bound",
+        format_bound_transition(previous_lb, new_lb),
+    )
+
+    if np.isfinite(previous_lb) and np.isfinite(new_lb) and new_lb != previous_lb:
+        optimizer.output.metric(
+            "LB improvement",
+            new_lb - previous_lb,
+        )
+
+    optimizer.output.metric(
+        "Upper bound",
+        format_bound_transition(previous_ub, new_ub),
+    )
+
+    if np.isfinite(previous_ub) and np.isfinite(new_ub) and new_ub != previous_ub:
+        optimizer.output.metric(
+            "UB reduction",
+            previous_ub - new_ub,
+        )
+
+    optimizer.output.metric(
+        "Absolute gap",
+        format_bound_transition(previous_abs_gap, new_abs_gap),
+    )  
+
+    optimizer.output.metric(
+        "Relative gap (%)",
+        f"{format_relative_gap(previous_rel_gap)} -> "
+        f"{format_relative_gap(new_rel_gap)}",
+    )
+
+def format_relative_gap(value: float) -> str:
+    return f"{100 * value:.3f}%" if np.isfinite(value) else "undefined"

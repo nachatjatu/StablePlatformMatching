@@ -23,3 +23,4 @@ class Branch:
             "Forced unmatched",
             sorted(self.forced_unmatch),
         )
+        output.blank()
