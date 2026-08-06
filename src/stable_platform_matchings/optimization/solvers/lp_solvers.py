@@ -8,17 +8,6 @@ from ...domain.route import Route
 from .runtime import require_solution
 
 
-def get_solver_threads() -> int:
-    for var in ("SLURM_CPUS_PER_TASK", "GUROBI_THREADS"):
-        value = os.environ.get(var)
-        if value:
-            try:
-                return max(1, int(value))
-            except ValueError:
-                pass
-    return 0
-
-
 class GurobiTSPSolver:
     """Gurobi-based solver for the prize-collecting TSP defined on the tree.
 
@@ -40,7 +29,12 @@ class GurobiTSPSolver:
         """
         self.instance = instance
 
-    def solve(self, prizes) -> tuple[list[Route], list[float]]:
+    def solve(
+        self, 
+        prizes, 
+        time_limit_seconds: int, 
+        threads: int
+    ) -> tuple[list[Route], list[float]]:
         """Solve the prize-collecting TSP.
 
         Args:
@@ -64,8 +58,9 @@ class GurobiTSPSolver:
             )
 
         model = gp.Model("TSP")
-        model.setParam("Threads", get_solver_threads())
+        model.setParam("Threads", threads)
         model.setParam("OutputFlag", 0)
+        model.setParam("TimeLimit", time_limit_seconds)
 
         # Add binary variables for each farmer
         farmer_ids = [farmer.id for farmer in self.instance.farmers]
@@ -167,7 +162,11 @@ class GurobiVRPSolver:
         self.instance = instance
 
     def solve(
-        self, n_vehicles_lower_bound: int, n_vehicles_upper_bound: int, time_limit: int = 2000
+        self, 
+        n_vehicles_lower_bound: int, 
+        n_vehicles_upper_bound: int, 
+        threads: int, 
+        time_limit_seconds: int | float = 4 * 60 * 60
     ) -> Matching:
         """
         Solve the VRP with a bound on number of vehicles.
@@ -175,8 +174,8 @@ class GurobiVRPSolver:
         Args:
             n_vehicles_lower_bound (int): minimum number of trucks to use.
             n_vehicles_upper_bound (int): maximum number of trucks available.
-            time_limit (int, optional): time limit for VRP solver.
-                defaults to 2000 seconds.
+            time_limit_seconds (int, optional): time limit for VRP solver.
+                defaults to 4 hours.
 
         Raises:
             RuntimeError: graph tree not initialized.
@@ -190,8 +189,8 @@ class GurobiVRPSolver:
             raise RuntimeError("graph tree not initialized.")
 
         model = gp.Model("VRP")
-        model.setParam("Threads", get_solver_threads())
-        model.setParam("TimeLimit", time_limit)
+        model.setParam("Threads", threads)
+        model.setParam("TimeLimit", time_limit_seconds)
 
         # add binary variables for each farmer and intermediary
         farmer_ids = [farmer.id for farmer in self.instance.farmers]

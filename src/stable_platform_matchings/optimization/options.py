@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from numbers import Real
 from typing import Literal, Mapping
+import gurobipy as gp
 
 from ..domain.instance import Instance
 
@@ -18,6 +19,8 @@ class OptimizerParams:
     vrp_mode: VRPMode = "approximate"
     verbose: bool = True
     print_width: int = 80
+    threads: int = 1
+    vrp_time_limit_seconds: int | float = gp.GRB.INFINITY
 
     def __post_init__(self) -> None:
         if type(self.verbose) is not bool:
@@ -82,9 +85,18 @@ class OptimizerParams:
             if epsilon < 0:
                 raise ValueError(f"epsilon[{intermediary_id!r}] must be nonnegative.")
 
+        if type(self.threads) is not int :
+                    raise TypeError(f"threads must be int, got {type(self.threads).__name__}")
+        
+        if type(self.vrp_time_limit_seconds) is not float :
+            raise TypeError(
+                f"threads must be float, got {type(self.vrp_time_limit_seconds).__name__}"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SolverOptions:
+    seed: int = 0
     strategy: SolverStrategy = "heuristic_optimized"
     structured_farmer_payments: bool = False
     dominance_constraints: bool = False
@@ -93,14 +105,14 @@ class SolverOptions:
     pay_unmatched: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.seed) is not int:
+            raise TypeError(f"seed must be int, got {type(self.seed).__name__}")
+        
+        if type(self.strategy) is not str:
+            raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")
 
-        value = self.strategy
-
-        if type(value) is not str:
-            raise TypeError(f"strategy must be str, got {type(value).__name__}")
-
-        if value not in {"exact", "heuristic_optimized", "heuristic_unoptimized"}:
-            raise ValueError(f"Unsupported strategy: {value}")
+        if self.strategy not in {"exact", "heuristic_optimized", "heuristic_unoptimized"}:
+            raise ValueError(f"Unsupported strategy: {self.strategy}")
 
         for name in (
             "structured_farmer_payments",

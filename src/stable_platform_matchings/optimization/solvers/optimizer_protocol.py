@@ -1,6 +1,7 @@
 from typing import Protocol
+import numpy as np
 
-from ...reporting.containers import DualSolution, InstanceSummary, PrimalSolution
+from ...reporting.containers import InstanceSummary, BranchPrimalResult, BranchDualResult
 from ...reporting.printer import Printer
 from ..branch import Branch
 from ..options import SolverOptions
@@ -10,13 +11,16 @@ class OptimizerProtocol(Protocol):
     best_lb: float
     best_ub: float
     best_lb_set: frozenset[str] | None
-    best_lb_summary: PrimalSolution | None
+    best_lb_result: BranchPrimalResult | None
 
-    oracle_calls: int
+    oracle_calls: list[int]
+    total_oracle_calls: int
     options: SolverOptions
     output: Printer
     instance_summary: InstanceSummary
     intermediary_ids: list[str]
+
+    rng: np.random.Generator | None
 
     INT_TOL = 1e-9
     BRANCH_PRUNE_TOL = 1.0
@@ -29,12 +33,12 @@ class OptimizerProtocol(Protocol):
         self,
         branch: Branch,
         sol_type: str,
-    ) -> PrimalSolution: ...
+    ) -> BranchPrimalResult: ...
 
     def solve_dual_for_branch(
         self,
         branch: Branch,
-    ) -> DualSolution: ...
+    ) -> BranchDualResult: ...
 
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool: ...
 

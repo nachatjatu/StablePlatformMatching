@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from ..domain.instance import Instance
 from ..domain.matching import Matching
@@ -12,136 +12,8 @@ if TYPE_CHECKING:
     from ..optimization.options import OptimizerParams
 
 
-@dataclass
-class PlatformSolution:
-    """Represents a final platform outcome including payments and matching.
-
-    This is a lightweight container used by higher-level scripts to record
-    platform-wide results.
-    """
-
-    instance: Instance
-    matching: Matching
-    farmer_payments: dict[str, float]
-    intermediary_profits: dict[str, float]
-
-
-class Solution:
-    """
-    Collects information about the solved instance.
-
-    Attributes:
-        instance (Instance): the current platform instance.
-        farmer_payments (dict[str, float]): a dict storing payments to farmers.
-            `farmer_payments[f]` is the payment associated with farmer with id `f`.
-        intermediary_profits (dict[str, float]): a dict storing intermediary profits.
-            `intermediary_profits[i]` is the profit associated with intermediary `i`.
-        intermediary_probs (dict[str, float]): a dict storing intermediary selection probabilities.
-            `intermediary_probs[i]` is the selection probability associated with intermediary `i`.
-        platform_profit (float): the optimal platform profit from optimizing the instance.
-        selected_set (set[str]): a set of IDs of selected intermediaries.
-        expected_intermediary_costs (float): expected total cost borne by intermediaries.
-        payment_per_quantity (float): value from optimized variable
-        paved_distance_penalty (float): value from optimized variable
-        dirt_distance_penalty (float):  value from optimized variable
-    """
-
-    MATCH_TOL = 1e-9
-
-    def __init__(
-        self,
-        instance: Instance,
-        intermediary_probs: dict[str, float | int],
-        farmer_payments: dict[str, float],
-        intermediary_profits: dict[str, float],
-        platform_profit: float,
-        expected_intermediary_costs: float,
-    ) -> None:
-        """
-        Initializes the Solution
-
-        Args:
-            instance (Instance): the current platform instance.
-            intermediary_probs (dict[str, float]): a dict storing intermediary
-                selection probabilities.
-            farmer_payments (dict[str, float]): a dict storing payments to farmers.
-                `farmer_payments[f]` is the payment associated with farmer with id `f`.
-            intermediary_profits (dict[str, float]): a dict storing intermediary profits.
-                `intermediary_profits[i]` is the profit associated with intermediary `i`.
-            platform_profit (float): the optimal platform profit from optimizing the instance.
-            expected_intermediary_costs (float): expected total cost borne by intermediaries.
-        """
-        self.instance: Instance = instance
-        self.intermediary_probs: dict[str, float] = intermediary_probs
-        self.farmer_payments: dict[str, float] = farmer_payments
-        self.intermediary_profits: dict[str, float] = intermediary_profits
-        self.platform_profit: float = platform_profit
-        self.expected_intermediary_costs: float = expected_intermediary_costs
-
-        self.selected_set: set | None = set()
-        self.payment_per_quantity: float | None = None
-        self.paved_distance_penalty: float | None = None
-        self.dirt_distance_penalty: float | None = None
-
-        # classify each intermediary as selected (near 1) or not (near 0) or neither (fractional)
-        for intermediary_id in intermediary_probs:
-            if intermediary_probs[intermediary_id] > 1 - Solution.MATCH_TOL:
-                self.selected_set.add(intermediary_id)
-            elif intermediary_probs[intermediary_id] < Solution.MATCH_TOL:
-                continue
-            else:
-                self.selected_set = None
-                break
-
-    def farmer_welfare(self) -> float:
-        return sum(self.farmer_payments[farmer.id] for farmer in self.instance.farmers)
-
-    def intermediary_welfare(self) -> float:
-        return sum(
-            self.intermediary_profits[intermediary_id]
-            for intermediary_id in self.intermediary_profits
-        )
-
-    def return_dict(self) -> dict[str, object]:
-        data = {
-            "farmer_payments": self.farmer_payments,
-            "intermediary_profits": self.intermediary_profits,
-            "intermediary_probs": self.intermediary_probs,
-            "platform_profit": self.platform_profit,
-            "selected_set": (sorted(self.selected_set) if self.selected_set is not None else None),
-            "expected_intermediary_costs": self.expected_intermediary_costs,
-            "farmer_welfare": self.farmer_welfare(),
-            "intermediary_welfare": self.intermediary_welfare(),
-            "payment_per_quantity": self.payment_per_quantity,
-            "paved_distance_penalty": self.paved_distance_penalty,
-            "dirt_distance_penalty": self.dirt_distance_penalty,
-        }
-        return data
-
-
-@dataclass
-class PrimalSolution:
-    platform_profit: float
-    n_added_rows: int
-    intermediary_probs: dict[str, float]
-    initial_intermediary_profits: dict[str, float]
-    expected_intermediary_costs: float
-
-    max_intermediary_welfare: float | None = None
-    min_farmer_welfare: float | None = None
-    max_intermediary_welfare_solution: Solution | None = None
-
-    max_farmer_welfare: float | None = None
-    min_intermediary_welfare: float | None = None
-    updated_intermediary_profits: dict[str, float] | None = None
-    max_farmer_welfare_solution: Solution | None = None
-
-
-@dataclass
-class DualSolution:
-    platform_profit: float
-    n_added_cols: int
-
+IntermediarySet: TypeAlias = frozenset[str]
+IntermediarySetProbabilities: TypeAlias = dict[IntermediarySet, float]
 
 @dataclass
 class BranchSolution:
@@ -149,29 +21,186 @@ class BranchSolution:
     branch: Branch
     branch_on: str | None = None
     branch_value: float | None = None
-    branch_profits: dict[str, float] | None = None
+    intermediary_profits: dict[str, float] | None = None
     upper_bound: float | None = None
+
+@dataclass
+class OptimizationResult:
+    """Result of one optimization pass.
+
+    The result may be integral or fractional. A concrete matching can only be
+    recovered directly when `selected_intermediaries` is not None.
+    """
+
+    instance: Instance
+
+    intermediary_set_probabilities: IntermediarySetProbabilities
+
+    farmer_payments: dict[str, float]
+    intermediary_profits: dict[str, float]
+
+    platform_profit: float
+    expected_intermediary_cost: float
+
+    payment_per_quantity: float | None = None
+    paved_distance_penalty: float | None = None
+    dirt_distance_penalty: float | None = None
+
+    INTEGRALITY_TOL: float = field(
+        default=1e-9,
+        init=False,
+        repr=False,
+    )
+
+    @property
+    def selected_intermediaries(self) -> IntermediarySet | None:
+        """Return the selected intermediary set when the result is integral."""
+        positive_sets = [
+            (intermediary_set, probability)
+            for intermediary_set, probability
+            in self.intermediary_set_probabilities.items()
+            if probability > self.INTEGRALITY_TOL
+        ]
+
+        if len(positive_sets) != 1:
+            return None
+
+        intermediary_set, probability = positive_sets[0]
+
+        if probability < 1.0 - self.INTEGRALITY_TOL:
+            return None
+
+        return intermediary_set
+
+    @property
+    def is_integral(self) -> bool:
+        return self.selected_intermediaries is not None
+
+    @property
+    def farmer_welfare(self) -> float:
+        return sum(self.farmer_payments.values())
+
+    @property
+    def intermediary_welfare(self) -> float:
+        return sum(self.intermediary_profits.values())
+
+    def return_dict(self) -> dict[str, object]:
+        return {
+            "farmer_payments": self.farmer_payments,
+            "intermediary_profits": self.intermediary_profits,
+            "intermediary_set_probabilities": [
+                {
+                    "intermediaries": sorted(intermediary_set),
+                    "probability": probability,
+                }
+                for intermediary_set, probability
+                in sorted(
+                    self.intermediary_set_probabilities.items(),
+                    key=lambda item: sorted(item[0]),
+                )
+            ],
+            "platform_profit": self.platform_profit,
+            "selected_intermediaries": (
+                sorted(self.selected_intermediaries)
+                if self.selected_intermediaries is not None
+                else None
+            ),
+            "is_integral": self.is_integral,
+            "expected_intermediary_cost": self.expected_intermediary_cost,
+            "farmer_welfare": self.farmer_welfare,
+            "intermediary_welfare": self.intermediary_welfare,
+            "payment_per_quantity": self.payment_per_quantity,
+            "paved_distance_penalty": self.paved_distance_penalty,
+            "dirt_distance_penalty": self.dirt_distance_penalty,
+        }
 
 
 @dataclass
+class BranchPrimalResult:
+    """Primary platform optimization and welfare reoptimizations."""
+
+    primary_result: OptimizationResult
+    n_added_rows: int
+
+    max_intermediary_welfare_result: (
+        OptimizationResult | None
+    ) = None
+
+    max_farmer_welfare_result: (
+        OptimizationResult | None
+    ) = None
+
+    @property
+    def platform_profit(self) -> float:
+        return self.primary_result.platform_profit
+
+    @property
+    def selected_intermediaries(self) -> IntermediarySet | None:
+        return self.primary_result.selected_intermediaries
+
+@dataclass(frozen=True)
+class BranchDualResult:
+    objective_value: float
+    n_added_columns: int
+
+
+
+@dataclass
+class PlatformOutcome:
+    """Concrete implementable platform outcome with a recovered matching."""
+
+    optimization_result: OptimizationResult
+    matching: Matching
+
+    def __post_init__(self) -> None:
+        if not self.optimization_result.is_integral:
+            raise ValueError(
+                "Cannot create a concrete PlatformOutcome from a "
+                "fractional optimization result."
+            )
+
+    @property
+    def instance(self) -> Instance:
+        return self.optimization_result.instance
+
+    @property
+    def selected_intermediaries(self) -> IntermediarySet:
+        selected = self.optimization_result.selected_intermediaries
+
+        if selected is None:
+            raise RuntimeError("PlatformOutcome requires an integral result.")
+
+        return selected
+
+    @property
+    def farmer_payments(self) -> dict[str, float]:
+        return self.optimization_result.farmer_payments
+
+    @property
+    def intermediary_profits(self) -> dict[str, float]:
+        return self.optimization_result.intermediary_profits
+
+    @property
+    def platform_profit(self) -> float:
+        return self.optimization_result.platform_profit
+
+@dataclass
 class InstanceSummary:
+    """Final platform outcome and optimization-run diagnostics."""
+
     instance: Instance
     params: OptimizerParams
     strategy: str
 
     start_time: float = field(default_factory=time.time)
+    platform_solve_result: BranchPrimalResult | None = None
     total_time: float | None = None
-    timestamps: list[float] = field(default_factory=list)
-
-    upper_bounds: list[float] = field(default_factory=list)
-    lower_bounds: list[float] = field(default_factory=list)
-
-    oracle_calls: list[int] = field(default_factory=list)
     total_oracle_calls: int | None = None
 
-    max_intermediary_welfare_solution: Solution | None = None
-    max_farmer_welfare_solution: Solution | None = None
+    lower_bounds: list = field(default_factory=list)
+    upper_bounds: list = field(default_factory=list)
+    timestamps: list = field(default_factory=list)
+    oracle_calls: list = field(default_factory=list)
 
     forced_lower_bound: float | None = None
     forced_upper_bound: float | None = None
-    forced_cost: float | None = None

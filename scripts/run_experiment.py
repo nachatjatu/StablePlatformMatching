@@ -1,4 +1,4 @@
-from stable_platform_matchings.optimization.optimizer import Optimizer
+from stable_platform_matchings import Optimizer
 
 
 def main() -> None:

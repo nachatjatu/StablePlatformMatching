@@ -1,4 +1,4 @@
-import os
+import numpy as np
 import time
 from collections.abc import Mapping
 from dataclasses import fields
@@ -8,7 +8,7 @@ from pprint import pformat
 import gurobipy as gp
 
 from ..domain.instance import Instance
-from ..reporting.containers import DualSolution, InstanceSummary, PrimalSolution, Solution
+from ..reporting.containers import OptimizationResult, PlatformOutcome, BranchPrimalResult, BranchDualResult, InstanceSummary
 from ..reporting.printer import Printer
 from .branch import Branch
 from .options import OptimizerParams, SolverOptions
@@ -23,17 +23,6 @@ IntermediarySelection = frozenset[IntermediaryId]
 RouteKey = frozenset[FarmerId]
 
 
-def get_solver_threads() -> int:
-    for var in ("SLURM_CPUS_PER_TASK", "GUROBI_THREADS"):
-        value = os.environ.get(var)
-        if value:
-            try:
-                return max(1, int(value))
-            except ValueError:
-                pass
-    return 0
-
-
 class Optimizer:
     """Main optimization engine implementing branch-and-price for the
     platform model.
@@ -43,7 +32,6 @@ class Optimizer:
     heuristic and exact modes.
     """
 
-    # Tolerance for row generation
     BRANCH_PRUNE_TOL = 1.0
     PRIMARY_OBJECTIVE_TOL = 1.0
     GLOBAL_LB_UPDATE_TOL = 1e-9
@@ -120,7 +108,7 @@ class Optimizer:
             "total": 0.0,
         }
 
-        self.best_lb_summary: PrimalSolution | None = None
+        self.best_lb_result: BranchPrimalResult | None = None
         self.best_lb_set: frozenset[str] | None = None
 
         initial_set_to_cost = self._initialize_intermediary_set_to_cost()
@@ -129,6 +117,11 @@ class Optimizer:
         self.intermediary_set_to_cost = initial_set_to_cost.copy()
 
         self.dominance_relations: list[tuple[str, str]] = []
+        self.best_lb, self.best_ub = -float("inf"), float("inf")
+        self.rng = None
+
+        self.total_oracle_calls = 0
+        self.oracle_calls = []
 
     def solve(self, options: SolverOptions) -> InstanceSummary:
         """
@@ -157,6 +150,8 @@ class Optimizer:
             self._calc_dominance() if self.options.dominance_constraints else []
         )
 
+        self.rng = np.random.default_rng(options.seed)
+
         self.intermediary_set_to_cost = self._initial_intermediary_set_to_cost.copy()
         self.route_by_farmer_ids_set = {}
 
@@ -164,7 +159,8 @@ class Optimizer:
         self.best_lb, self.best_ub = -float("inf"), float("inf")
         self.best_lb_summary = None
         self.best_lb_set = None
-        self.oracle_calls = 0
+        self.total_oracle_calls = 0
+        self.oracle_calls = []
 
         self.time_usage = {
             "tsp": 0.0,
@@ -175,8 +171,11 @@ class Optimizer:
             "total": 0.0,
         }
 
+        # construct instance summary
         self.instance_summary = InstanceSummary(
-            instance=self.instance, params=self.params, strategy=self.options.strategy
+            instance=self.instance, 
+            params=self.params, 
+            strategy=self.options.strategy
         )
 
         self.output.section(f"Strategy: {self.options.strategy}")
@@ -185,29 +184,24 @@ class Optimizer:
 
         # solve using specified search strategy
         if self.options.strategy == "exact":
-            best_lb_solution = solve_exact(self)
+            best_lb_result = solve_exact(self)
         elif self.options.strategy == "heuristic_unoptimized":
-            best_lb_solution = solve_heuristic(self, optimize=False)
+            best_lb_result = solve_heuristic(self, optimize=False)
         else:
-            best_lb_solution = solve_heuristic(self, optimize=True)
+            best_lb_result = solve_heuristic(self, optimize=True)
 
         # raise error if optimization fails to find a solution
-        if best_lb_solution is None:
+        if best_lb_result is None:
             raise RuntimeError("Optimization finished without finding a feasible incumbent.")
 
         # record solution and print details
+        self.instance_summary.platform_solve_result = best_lb_result
         self.instance_summary.total_time = time.time() - self.instance_summary.start_time
-        self.instance_summary.max_intermediary_welfare_solution = (
-            best_lb_solution.max_intermediary_welfare_solution
-        )
-        self.instance_summary.max_farmer_welfare_solution = (
-            best_lb_solution.max_farmer_welfare_solution
-        )
-        self.instance_summary.total_oracle_calls = self.oracle_calls
+        self.instance_summary.total_oracle_calls = self.total_oracle_calls
 
         self.output.section("Solver Complete", fill="=")
         self.output.metric("Total time (seconds)", self.instance_summary.total_time)
-        self.output.metric("Oracle calls", self.oracle_calls, precision=0)
+        self.output.metric("Oracle calls", self.total_oracle_calls, precision=0)
         self.output.metric("Best lower bound", self.best_lb)
         self.output.metric("Best upper bound", self.best_ub)
 
@@ -248,7 +242,7 @@ class Optimizer:
 
         return True
 
-    def solve_primal_for_branch(self, branch: Branch, sol_type: str) -> PrimalSolution:
+    def solve_primal_for_branch(self, branch: Branch, sol_type: str) -> BranchPrimalResult:
         """
         Solve the primal LP under given branch and solution type in-place.
 
@@ -276,7 +270,7 @@ class Optimizer:
 
         # create a new model
         model = gp.Model("Primal")
-        model.setParam("Threads", get_solver_threads())
+        model.setParam("Threads", self.params.threads)
         model.setParam("OutputFlag", 0)
 
         # create payment variables for each farmer and intermediary
@@ -362,7 +356,7 @@ class Optimizer:
                 for intermediary_id in branch.forced_unmatch
             )
 
-        # constraint 6: if applicable, force certain selection to be used
+        # constraint 6: if applicable, force to use min cost set
         if sol_type in ["forced_upper_bound", "forced_lower_bound"]:
             index_min_cost_set = valid_intermediary_sets.index(branch.min_cost_set)
             model.addConstr(intermediary_set_prob_vars[index_min_cost_set] == 1, "forced_selection")
@@ -573,47 +567,59 @@ class Optimizer:
 
             n_added_rows += new_rows
 
-        def extract_selection_values():
-            set_probabilities = model.getAttr(
-                "X",
-                intermediary_set_prob_vars,
-            )
-
-            intermediary_probs = {
-                intermediary_id: float(
-                    sum(
-                        set_probabilities[k]
-                        for k, intermediary_set in enumerate(valid_intermediary_sets)
-                        if intermediary_id in intermediary_set
-                    )
-                )
-                for intermediary_id in self.intermediary_ids
+        def _extract_result(
+            model, 
+            platform_profit, 
+            payment_per_quantity, 
+            paved_distance_penalty, 
+            dirt_distance_penalty
+        ):
+            intermediary_profits = {
+                intermediary.id: intermediary_profit_vars[intermediary.id].X
+                for intermediary in self.instance.intermediaries
             }
-
-            expected_intermediary_costs = gp.quicksum(
+            farmer_payments = {
+                farmer.id: farmer_payment_vars[farmer.id].X for farmer in self.instance.farmers
+            }
+            set_probabilities = model.getAttr("X", intermediary_set_prob_vars)
+            expected_intermediary_cost = gp.quicksum(
                 intermediary_set_prob_vars[k]
                 * self.intermediary_set_to_cost[valid_intermediary_sets[k]]
                 for k in range(n_valid_intermediary_sets)
+            ).getValue()
+
+            result = OptimizationResult(
+                instance=self.instance,
+                intermediary_set_probabilities=set_probabilities,
+                farmer_payments=farmer_payments,
+                intermediary_profits=intermediary_profits,
+                platform_profit=platform_profit,
+                expected_intermediary_cost=expected_intermediary_cost
             )
 
-            return set_probabilities, intermediary_probs, expected_intermediary_costs.getValue()
+            if (
+                payment_per_quantity is not None
+                and paved_distance_penalty is not None
+                and dirt_distance_penalty is not None
+            ):
+                result.payment_per_quantity = payment_per_quantity.X
+                result.paved_distance_penalty = paved_distance_penalty.X
+                result.dirt_distance_penalty = dirt_distance_penalty.X
+            else:
+                payment_per_quantity = None
+                result.paved_distance_penalty = None
+                result.dirt_distance_penalty = None
+
+            return result
 
         # extract solution information and add to solution summary
-        initial_intermediary_profits = {
-            intermediary.id: intermediary_profit_vars[intermediary.id].X
-            for intermediary in self.instance.intermediaries
-        }
-
-        _, intermediary_probs, expected_intermediary_costs = extract_selection_values()
-
-        optimal_platform_profit = model.ObjVal
-
-        solution_summary = PrimalSolution(
-            platform_profit=optimal_platform_profit,
-            n_added_rows=n_added_rows,
-            intermediary_probs=intermediary_probs,
-            initial_intermediary_profits=initial_intermediary_profits,
-            expected_intermediary_costs=expected_intermediary_costs,
+        platform_profit = model.ObjVal
+        primary_result = _extract_result(
+            model=model, 
+            platform_profit=platform_profit, 
+            payment_per_quantity=payment_per_quantity, 
+            paved_distance_penalty=paved_distance_penalty, 
+            dirt_distance_penalty=dirt_distance_penalty
         )
 
         # re-optimization of degenerate solutions (since there can be multiple optimal solutions)
@@ -631,40 +637,14 @@ class Optimizer:
         require_solution(model, "Maximum intermediary-welfare solve")
 
         # extract solution information and add to solution summary
-        farmer_payments = {
-            farmer.id: farmer_payment_vars[farmer.id].X for farmer in self.instance.farmers
-        }
-        intermediary_profits = {
-            intermediary.id: intermediary_profit_vars[intermediary.id].X
-            for intermediary in self.instance.intermediaries
-        }
-
-        _, intermediary_probs, expected_intermediary_costs = extract_selection_values()
-
-        max_intermediary_welfare_solution = Solution(
-            instance=self.instance,
-            intermediary_probs=intermediary_probs,
-            farmer_payments=farmer_payments,
-            intermediary_profits=intermediary_profits,
-            platform_profit=optimal_platform_profit,
-            expected_intermediary_costs=expected_intermediary_costs,
-        )
-
-        if (
-            payment_per_quantity is not None
-            and paved_distance_penalty is not None
-            and dirt_distance_penalty is not None
-        ):
-            max_intermediary_welfare_solution.payment_per_quantity = payment_per_quantity.X
-            max_intermediary_welfare_solution.paved_distance_penalty = paved_distance_penalty.X
-            max_intermediary_welfare_solution.dirt_distance_penalty = dirt_distance_penalty.X
-
         max_intermediary_welfare = model.ObjVal
-        min_farmer_welfare = sum(farmer_payments.values())
-
-        solution_summary.max_intermediary_welfare = max_intermediary_welfare
-        solution_summary.min_farmer_welfare = min_farmer_welfare
-        solution_summary.max_intermediary_welfare_solution = max_intermediary_welfare_solution
+        max_intermediary_welfare_result = _extract_result(
+            model=model,
+            platform_profit=platform_profit,
+            payment_per_quantity=payment_per_quantity,
+            paved_distance_penalty=paved_distance_penalty,
+            dirt_distance_penalty=dirt_distance_penalty
+        )
 
         # re-optimize to get max farmer welfare solution
         farmer_welfare = gp.quicksum(
@@ -675,54 +655,32 @@ class Optimizer:
 
         require_solution(model, "Maximum farmer-welfare solve")
 
-        # extract solution information and add to solution summary
-        farmer_payments = {
-            farmer.id: farmer_payment_vars[farmer.id].X for farmer in self.instance.farmers
-        }
-        intermediary_profits = {
-            intermediary.id: intermediary_profit_vars[intermediary.id].X
-            for intermediary in self.instance.intermediaries
-        }
+        max_farmer_welfare = model.ObjVal
+        max_farmer_welfare_result = _extract_result(
+            model=model,
+            platform_profit=platform_profit,
+            payment_per_quantity=payment_per_quantity,
+            paved_distance_penalty=paved_distance_penalty,
+            dirt_distance_penalty=dirt_distance_penalty
+        )
+        
 
-        _, intermediary_probs, expected_intermediary_costs = extract_selection_values()
+        self.output.subsection("Primal Solve Result")
+        self.output.metric("New rows", n_added_rows, precision=0)
+        self.output.metric("Platform profit", platform_profit)
+        self.output.metric("Max intermediary welfare", max_intermediary_welfare)
+        self.output.metric("Max farmer welfare", max_farmer_welfare)
 
-        max_farmer_welfare_solution = Solution(
-            instance=self.instance,
-            intermediary_probs=intermediary_probs,
-            farmer_payments=farmer_payments,
-            intermediary_profits=intermediary_profits,
-            platform_profit=optimal_platform_profit,
-            expected_intermediary_costs=expected_intermediary_costs,
+
+        return BranchPrimalResult(
+            primary_result=primary_result,
+            n_added_rows=n_added_rows,
+            max_intermediary_welfare_result=max_intermediary_welfare_result,
+            max_farmer_welfare_result=max_farmer_welfare_result
         )
 
-        if (
-            payment_per_quantity is not None
-            and paved_distance_penalty is not None
-            and dirt_distance_penalty is not None
-        ):
-            max_farmer_welfare_solution.payment_per_quantity = payment_per_quantity.X
-            max_farmer_welfare_solution.paved_distance_penalty = paved_distance_penalty.X
-            max_farmer_welfare_solution.dirt_distance_penalty = dirt_distance_penalty.X
 
-        min_intermediary_welfare = sum(intermediary_profits.values())
-        max_farmer_welfare = model.ObjVal
-
-        solution_summary.max_farmer_welfare = max_farmer_welfare
-        solution_summary.min_intermediary_welfare = min_intermediary_welfare
-        solution_summary.updated_intermediary_profits = intermediary_profits
-        solution_summary.max_farmer_welfare_solution = max_farmer_welfare_solution
-
-        # print out summary of solutions
-        self.output.subsection(f"Primal Solve: {sol_type.replace('_', ' ').title()}")
-        self.output.metric("Platform-profit objective", optimal_platform_profit)
-        self.output.metric("Intermediary-welfare objective", max_intermediary_welfare)
-        self.output.metric("Farmer-welfare objective", max_farmer_welfare)
-        self.output.metric("New rows", n_added_rows, precision=0)
-        self.output.collection("Intermediary probabilities", intermediary_probs)
-
-        return solution_summary
-
-    def solve_dual_for_branch(self, branch: Branch) -> DualSolution:
+    def solve_dual_for_branch(self, branch: Branch) -> BranchDualResult:
         """Construct and solve the dual LP for a given branch.
 
         The dual problem is used to generate new columns via a
@@ -738,7 +696,7 @@ class Optimizer:
         """
 
         model = gp.Model("Dual")
-        model.setParam("Threads", get_solver_threads())
+        model.setParam("Threads", self.params.threads)
         model.setParam("OutputFlag", 0)
 
         if self.options.pay_unmatched:
@@ -1005,14 +963,13 @@ class Optimizer:
             else:
                 break
 
-        # record solution results and return
-        platform_profit = model.ObjVal
-
         self.output.subsection("Dual Column Generation Result")
         self.output.metric("New columns", n_added_cols, precision=0)
-        self.output.metric("Objective", platform_profit)
+        self.output.metric("Objective", model.objVal)
 
-        return DualSolution(platform_profit=platform_profit, n_added_cols=n_added_cols)
+        return BranchDualResult(objective_value=model.ObjVal, n_added_columns=n_added_cols)
+
+
 
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool:
         return value > self.best_lb + tolerance
@@ -1021,7 +978,7 @@ class Optimizer:
         self.instance_summary.lower_bounds.append(self.best_lb)
         self.instance_summary.upper_bounds.append(self.best_ub)
         self.instance_summary.timestamps.append(time.time() - self.instance_summary.start_time)
-        self.instance_summary.oracle_calls.append(self.oracle_calls)
+        self.instance_summary.oracle_calls.append(self.total_oracle_calls)
 
     def _add_stability_cuts_for_route(self, model, eta, kappa, farmer_payment_vars, route) -> None:
         """Add stability cuts to the primal model for a given route.
@@ -1096,7 +1053,7 @@ class Optimizer:
             raise ValueError("Branch contains unknown forced-unmatch IDs.")
 
         if branch.count_flag:
-            self.oracle_calls += 1
+            self.total_oracle_calls += 1
 
         net_prizes = {
             intermediary_id: intermediary_id_to_prize[intermediary_id]
@@ -1253,7 +1210,12 @@ class Optimizer:
 
         # solve for min cost matchin
         self.output.subsection("Solving for minimum cost matching")
-        min_cost_matching = self.vrp_solver.solve(1, self.n_intermediaries)
+        min_cost_matching = self.vrp_solver.solve(
+            n_vehicles_lower_bound=1,
+            n_vehicles_upper_bound=self.n_intermediaries,
+            threads=self.params.threads,
+            time_limit_seconds=self.params.vrp_time_limit_seconds
+        )
         min_trucks = len(min_cost_matching.routes)
 
         self.output.metric("Minimum-cost objective", min_cost_matching.cost)
@@ -1271,7 +1233,12 @@ class Optimizer:
             self.output.blank()
             self.output.subsubsection(f"Number of Trucks = {n_trucks}")
             if self.params.vrp_mode == "exact":
-                matching = self.vrp_solver.solve(n_trucks, n_trucks)
+                matching = self.vrp_solver.solve(
+                    n_vehicles_lower_bound=n_trucks, 
+                    n_vehicles_upper_bound=n_trucks, 
+                    threads=self.params.threads,
+                    time_limit_seconds=self.params.vrp_time_limit_seconds
+                )
                 cost = matching.cost
 
             elif self.params.vrp_mode == "approximate":
