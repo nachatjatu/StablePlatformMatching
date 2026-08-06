@@ -33,6 +33,8 @@ class OptimizerProtocol(Protocol):
         self,
         branch: Branch,
         sol_type: str,
+        compute_extrema: bool,
+        stabilize_extrema: bool
     ) -> BranchPrimalResult: ...
 
     def solve_dual_for_branch(

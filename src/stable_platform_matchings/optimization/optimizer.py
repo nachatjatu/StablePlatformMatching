@@ -8,13 +8,12 @@ from pprint import pformat
 import gurobipy as gp
 
 from ..domain.instance import Instance
-from ..reporting.containers import OptimizationResult, PlatformOutcome, BranchPrimalResult, BranchDualResult, InstanceSummary
+from ..reporting.containers import OptimizationResult, BranchPrimalResult, BranchDualResult, InstanceSummary
 from ..reporting.printer import Printer
 from .branch import Branch
 from .options import OptimizerParams, SolverOptions
 from .solvers.dynamic_solvers import DynamicTSPSolver
 from .solvers.lp_solvers import GurobiVRPSolver
-from .solvers.runtime import require_solution
 from .solvers.search_strategies import solve_exact, solve_heuristic
 
 IntermediaryId = str
@@ -73,6 +72,9 @@ class Optimizer:
 
         self.n_farmers = len(self.instance.farmers)
         self.n_intermediaries = len(self.instance.intermediaries)
+
+        self.output.metric("farmers", self.n_farmers)
+        self.output.metric("intermediaries", self.n_intermediaries)
 
         self.farmer_ids = [farmer.id for farmer in self.instance.farmers]
         self.intermediary_ids = [intermediary.id for intermediary in self.instance.intermediaries]
@@ -140,6 +142,8 @@ class Optimizer:
 
         self.options = options
 
+        self._validate_for_strategy()
+        
         self._print_solver_options()
 
         if self.options.structured_farmer_payments:
@@ -157,7 +161,7 @@ class Optimizer:
 
         # reset solver state
         self.best_lb, self.best_ub = -float("inf"), float("inf")
-        self.best_lb_summary = None
+        self.best_lb_result = None
         self.best_lb_set = None
         self.total_oracle_calls = 0
         self.oracle_calls = []
@@ -184,26 +188,79 @@ class Optimizer:
 
         # solve using specified search strategy
         if self.options.strategy == "exact":
-            best_lb_result = solve_exact(self)
+            solve_exact(self)
         elif self.options.strategy == "heuristic_unoptimized":
-            best_lb_result = solve_heuristic(self, optimize=False)
+            solve_heuristic(
+                self, 
+                optimize=False, 
+                stabilize_branch_extrema=self.options.stabilize_branch_extrema
+            )
         else:
-            best_lb_result = solve_heuristic(self, optimize=True)
+            solve_heuristic(
+                self, 
+                optimize=True, 
+                stabilize_branch_extrema=self.options.stabilize_branch_extrema
+            )
 
         # raise error if optimization fails to find a solution
-        if best_lb_result is None:
+        if self.best_lb_result is None or self.best_lb_set is None:
             raise RuntimeError("Optimization finished without finding a feasible incumbent.")
 
+        final_set = frozenset(self.best_lb_set)
+
+        final_branch = Branch(
+            forced_match=set(final_set),
+            forced_unmatch=set(self.intermediary_ids) - set(final_set),
+        )
+
+        if not self.initialize_branch(final_branch):
+            raise RuntimeError(
+                "The selected global intermediary set became infeasible "
+                "during final stabilization."
+            )
+
+        final_result = self.solve_primal_for_branch(
+            final_branch,
+            sol_type="forced_lower_bound",
+            compute_extrema=True,
+            stabilize_extrema=True,
+        )
+
         # record solution and print details
-        self.instance_summary.platform_solve_result = best_lb_result
+        self.best_lb_result = final_result
+        self.best_lb = final_result.platform_profit
+
+        self.record_summary()
+
+        abs_gap = (
+            self.best_ub - self.best_lb 
+            if np.isfinite(self.best_lb) and np.isfinite(self.best_ub) 
+            else float("inf")
+        )
+    
+        if not np.isfinite(self.best_lb) or not np.isfinite(self.best_ub):
+            rel_gap = float("inf")
+        else:
+            denominator = max(abs(self.best_lb), 1.0)
+            rel_gap = max(0.0, abs_gap) / denominator
+
+        self.instance_summary.platform_solve_result = final_result
         self.instance_summary.total_time = time.time() - self.instance_summary.start_time
         self.instance_summary.total_oracle_calls = self.total_oracle_calls
+
+        self.instance_summary.abs_gap = abs_gap
+        self.instance_summary.rel_gap = rel_gap
 
         self.output.section("Solver Complete", fill="=")
         self.output.metric("Total time (seconds)", self.instance_summary.total_time)
         self.output.metric("Oracle calls", self.total_oracle_calls, precision=0)
         self.output.metric("Best lower bound", self.best_lb)
         self.output.metric("Best upper bound", self.best_ub)
+        self.output.metric("Absolute gap", abs_gap)
+        self.output.metric(
+            "Relative gap (%)", 
+            f"{100 * rel_gap:.3f}%" if np.isfinite(rel_gap) else "undefined"
+        )
 
         return self.instance_summary
 
@@ -242,7 +299,13 @@ class Optimizer:
 
         return True
 
-    def solve_primal_for_branch(self, branch: Branch, sol_type: str) -> BranchPrimalResult:
+    def solve_primal_for_branch(
+        self, 
+        branch: Branch, 
+        sol_type: str,
+        compute_extrema: bool,
+        stabilize_extrema: bool
+    ) -> BranchPrimalResult:
         """
         Solve the primal LP under given branch and solution type in-place.
 
@@ -270,8 +333,8 @@ class Optimizer:
 
         # create a new model
         model = gp.Model("Primal")
-        model.setParam("Threads", self.params.threads)
         model.setParam("OutputFlag", 0)
+        model.setParam("Threads", self.params.threads)
 
         # create payment variables for each farmer and intermediary
         farmer_payment_vars = model.addVars(
@@ -462,16 +525,6 @@ class Optimizer:
             - total_intermediary_profits
             - expected_intermediary_costs
         )
-        model.setObjective(platform_profit_expr, gp.GRB.MAXIMIZE)
-        model.update()
-
-        # optimize with a subset of rows (fewer constraints)
-        time_optimization_start = time.time()
-        model.optimize()
-        initial_solve_time = time.time() - time_optimization_start
-        self.time_usage["solving"] += initial_solve_time
-
-        require_solution(model, f"Initial primal solve ({sol_type})")
 
         def add_violated_stability_cuts() -> int:
             """
@@ -529,7 +582,7 @@ class Optimizer:
                         )
 
                         farmer_ids_set = frozenset([farmer.id for farmer in route.farmers])
-
+                        
                         # add cuts if unstable and farmer set not encountered before
                         if (
                             violation > Optimizer.CUT_TOL
@@ -550,22 +603,27 @@ class Optimizer:
 
             return new_rows
 
-        # repeatedly add new stability cuts (rows) in response to
-        #   violations until solution is stable
-        n_added_rows = 0
-        while True:
-            new_rows = add_violated_stability_cuts()
+        def optimize_with_separation(
+            objective: gp.LinExpr,
+            context: str,
+        ) -> tuple[int, float]:
+            
+            model.setObjective(objective, gp.GRB.MAXIMIZE)
 
-            time_optimization_start = time.time()
-            model.optimize()
-            self.time_usage["solving"] += time.time() - time_optimization_start
+            rows_added = 0
 
-            require_solution(model, f"Primal row-generation solve ({sol_type})")
+            while True:
+                start = time.time()
+                model.optimize()
+                self.time_usage["solving"] += time.time() - start
 
-            if new_rows == 0:
-                break
+                self._require_solution(model, context)
 
-            n_added_rows += new_rows
+                new_rows = add_violated_stability_cuts()
+                rows_added += new_rows
+
+                if new_rows == 0:
+                    return rows_added, model.ObjVal
 
         def _extract_result(
             model, 
@@ -581,7 +639,15 @@ class Optimizer:
             farmer_payments = {
                 farmer.id: farmer_payment_vars[farmer.id].X for farmer in self.instance.farmers
             }
-            set_probabilities = model.getAttr("X", intermediary_set_prob_vars)
+            raw_set_probabilities = model.getAttr(
+                "X",
+                intermediary_set_prob_vars,
+            )
+
+            set_probabilities = {
+                valid_intermediary_sets[k]: raw_set_probabilities[k]
+                for k in range(n_valid_intermediary_sets)
+            }
             expected_intermediary_cost = gp.quicksum(
                 intermediary_set_prob_vars[k]
                 * self.intermediary_set_to_cost[valid_intermediary_sets[k]]
@@ -605,15 +671,15 @@ class Optimizer:
                 result.payment_per_quantity = payment_per_quantity.X
                 result.paved_distance_penalty = paved_distance_penalty.X
                 result.dirt_distance_penalty = dirt_distance_penalty.X
-            else:
-                payment_per_quantity = None
-                result.paved_distance_penalty = None
-                result.dirt_distance_penalty = None
 
             return result
 
         # extract solution information and add to solution summary
-        platform_profit = model.ObjVal
+        primary_rows, platform_profit = optimize_with_separation(
+            platform_profit_expr,
+            f"Primary primal solve ({sol_type})",
+        )
+
         primary_result = _extract_result(
             model=model, 
             platform_profit=platform_profit, 
@@ -621,6 +687,12 @@ class Optimizer:
             paved_distance_penalty=paved_distance_penalty, 
             dirt_distance_penalty=dirt_distance_penalty
         )
+
+        if not compute_extrema:
+            return BranchPrimalResult(
+                primary_result=primary_result,
+                primary_n_added_rows=primary_rows
+            )
 
         # re-optimization of degenerate solutions (since there can be multiple optimal solutions)
         model.addConstr(
@@ -631,16 +703,23 @@ class Optimizer:
         intermediary_welfare = gp.quicksum(
             intermediary_profit_vars[intermediary_id] for intermediary_id in self.intermediary_ids
         )
-        model.setObjective(intermediary_welfare, gp.GRB.MAXIMIZE)
-        model.optimize()
 
-        require_solution(model, "Maximum intermediary-welfare solve")
+        if stabilize_extrema:
+            _, max_intermediary_welfare = optimize_with_separation(
+                intermediary_welfare,
+                "Maximum intermediary-welfare solve",
+            )
+        else:
+            model.setObjective(intermediary_welfare, gp.GRB.MAXIMIZE)
+            model.optimize()
+            self._require_solution(model, "Maximum intermediary-welfare solve")
+            max_intermediary_welfare = model.ObjVal
 
         # extract solution information and add to solution summary
-        max_intermediary_welfare = model.ObjVal
+        max_intermediary_welfare_platform_profit = platform_profit_expr.getValue()
         max_intermediary_welfare_result = _extract_result(
             model=model,
-            platform_profit=platform_profit,
+            platform_profit=max_intermediary_welfare_platform_profit,
             payment_per_quantity=payment_per_quantity,
             paved_distance_penalty=paved_distance_penalty,
             dirt_distance_penalty=dirt_distance_penalty
@@ -650,31 +729,35 @@ class Optimizer:
         farmer_welfare = gp.quicksum(
             farmer_payment_vars[farmer.id] for farmer in self.instance.farmers
         )
-        model.setObjective(farmer_welfare, gp.GRB.MAXIMIZE)
-        model.optimize()
 
-        require_solution(model, "Maximum farmer-welfare solve")
+        if stabilize_extrema:
+            _, max_farmer_welfare = optimize_with_separation(
+                farmer_welfare,
+                "Maximum farmer-welfare solve",
+            )
+        else:
+            model.setObjective(farmer_welfare, gp.GRB.MAXIMIZE)
+            model.optimize()
+            self._require_solution(model, "Maximum farmer-welfare solve")
+            max_farmer_welfare = model.ObjVal
 
-        max_farmer_welfare = model.ObjVal
+        max_farmer_welfare_platform_profit = platform_profit_expr.getValue()
         max_farmer_welfare_result = _extract_result(
             model=model,
-            platform_profit=platform_profit,
+            platform_profit=max_farmer_welfare_platform_profit,
             payment_per_quantity=payment_per_quantity,
             paved_distance_penalty=paved_distance_penalty,
             dirt_distance_penalty=dirt_distance_penalty
         )
-        
 
         self.output.subsection("Primal Solve Result")
-        self.output.metric("New rows", n_added_rows, precision=0)
         self.output.metric("Platform profit", platform_profit)
         self.output.metric("Max intermediary welfare", max_intermediary_welfare)
         self.output.metric("Max farmer welfare", max_farmer_welfare)
 
-
         return BranchPrimalResult(
             primary_result=primary_result,
-            n_added_rows=n_added_rows,
+            primary_n_added_rows=primary_rows,
             max_intermediary_welfare_result=max_intermediary_welfare_result,
             max_farmer_welfare_result=max_farmer_welfare_result
         )
@@ -696,8 +779,8 @@ class Optimizer:
         """
 
         model = gp.Model("Dual")
-        model.setParam("Threads", self.params.threads)
         model.setParam("OutputFlag", 0)
+        model.setParam("Threads", self.params.threads)
 
         if self.options.pay_unmatched:
             raise NotImplementedError(
@@ -715,7 +798,6 @@ class Optimizer:
             ],
             vtype=gp.GRB.CONTINUOUS,
             lb=0.0,
-            name="alpha",
         )
 
         # dual variable corresponding to constraint that intermediary set probabilities sum to one
@@ -905,7 +987,7 @@ class Optimizer:
 
         # optimize with a subset of columns
         model.optimize()
-        require_solution(model, "Initial dual solve")
+        self._require_solution(model, "Initial dual solve")
 
         # repeatedly add new stability cuts (cols) in response to violations
         # until solution is stable
@@ -959,26 +1041,40 @@ class Optimizer:
                 model.addConstr(constr, f"intermediary_set_constraint_{n_added_cols}")
                 n_added_cols += 1
                 model.optimize()
-                require_solution(model, "Dual column-generation solve")
+                self._require_solution(model, "Dual column-generation solve")
             else:
                 break
 
-        self.output.subsection("Dual Column Generation Result")
-        self.output.metric("New columns", n_added_cols, precision=0)
-        self.output.metric("Objective", model.objVal)
-
         return BranchDualResult(objective_value=model.ObjVal, n_added_columns=n_added_cols)
 
-
+    @staticmethod
+    def _require_solution(model: gp.Model, context: str) -> None:
+        if model.SolCount == 0:
+            raise RuntimeError(f"{context} produced no feasible solution; status={model.Status}.")
 
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool:
         return value > self.best_lb + tolerance
 
-    def record_summary(self):
+    def record_summary(self) -> None:
+        elapsed = time.time() - self.instance_summary.start_time
+
+        if np.isfinite(self.best_lb) and np.isfinite(self.best_ub):
+            absolute_gap = max(0.0, self.best_ub - self.best_lb)
+            relative_gap_value = absolute_gap / max(abs(self.best_lb), 1.0)
+        else:
+            absolute_gap = float("inf")
+            relative_gap_value = float("inf")
+
+        self.instance_summary.timestamps.append(elapsed)
         self.instance_summary.lower_bounds.append(self.best_lb)
         self.instance_summary.upper_bounds.append(self.best_ub)
-        self.instance_summary.timestamps.append(time.time() - self.instance_summary.start_time)
-        self.instance_summary.oracle_calls.append(self.total_oracle_calls)
+        self.instance_summary.optimality_gaps.append(absolute_gap)
+        self.instance_summary.relative_optimality_gaps.append(
+            relative_gap_value
+        )
+        self.instance_summary.oracle_calls.append(
+            self.total_oracle_calls
+        )
 
     def _add_stability_cuts_for_route(self, model, eta, kappa, farmer_payment_vars, route) -> None:
         """Add stability cuts to the primal model for a given route.
@@ -1330,3 +1426,11 @@ class Optimizer:
 
             label = field.name.replace("_", " ").title()
             self.output.metric(label, value)
+
+    def _validate_for_strategy(self) -> None:
+        if self.options.strategy == "exact" and self.options.pay_unmatched:
+            raise ValueError(
+                "The exact strategy does not support "
+                "pay_unmatched=True because dual column generation "
+                "is unavailable for that formulation."
+            )

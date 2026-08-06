@@ -5,6 +5,7 @@ import pickle
 from collections import defaultdict
 from collections.abc import Hashable
 from typing import TypeAlias
+from pathlib import Path
 
 import networkx as nx
 import yaml
@@ -71,7 +72,7 @@ class Instance:
     TRUCK_COST_PER_KM = 2625  # (2625.0 + 2065.0) / 2.0, local currency
     TRUCK_COST_PER_M = TRUCK_COST_PER_KM / 1000
 
-    MILL_KEY = "MILL"  # default mill key
+    MILL_LOC = [-0.682643, 102.501522]
 
     LC_TO_USD = 14500  # amount of local currency per 1 USD (IDR)
 
@@ -104,6 +105,7 @@ class Instance:
         self.intermediaries = intermediaries
         self.mill = mill
         self.entities = farmers + intermediaries + [mill]
+        self.mill_key = mill.id
 
         # validate entity names are unique
         entity_ids = [entity.id for entity in self.entities]
@@ -118,7 +120,6 @@ class Instance:
         self.lc_to_usd = Instance.LC_TO_USD
 
         # misc.
-        self.mill_key = Instance.MILL_KEY
         self.farmer_by_id = {farmer.id: farmer for farmer in farmers}
 
         # store distances/cost to mill
@@ -212,11 +213,11 @@ class Instance:
         # find mill
         mill = None
         for m in instance_dict["mills"]:
-            if m["mill_id"] == cls.MILL_KEY:
+            if m["location"] == cls.MILL_LOC:
                 mill = Mill(m["mill_id"], tuple(m["location"]))
                 break
         if mill is None:
-            raise ValueError(f"No mill with ID {cls.MILL_KEY!r} was found.")
+            raise ValueError(f"No mill with location {cls.MILL_LOC!r} was found.")
 
         return cls(
             instance_id=instance_dict["instance_id"],
@@ -227,7 +228,7 @@ class Instance:
 
     @classmethod
     def from_yaml(
-        cls, yaml_filepath: str, force_quantities: dict[str, float] | None = None
+        cls, yaml_filepath: Path, force_quantities: dict[str, float] | None = None
     ) -> Instance:
         """Load an instance from a YAML file."""
         with open(yaml_filepath, "r") as file:

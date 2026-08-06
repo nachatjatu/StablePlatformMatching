@@ -1,14 +1,15 @@
 import numpy as np
 
-from ...reporting.containers import OptimizationResult, PlatformOutcome, BranchPrimalResult, BranchSolution
+from ...reporting.containers import BranchSolution
 from ..branch import Branch
 from .optimizer_protocol import OptimizerProtocol
 
 
 def solve_heuristic(
     optimizer: OptimizerProtocol, 
-    optimize: bool
-) -> BranchPrimalResult:
+    optimize: bool,
+    stabilize_branch_extrema: bool
+) -> None:
     
     root_branch = Branch(set(), set())
     branches_to_evaluate = [root_branch]
@@ -16,7 +17,12 @@ def solve_heuristic(
 
     while True:
         for branch in branches_to_evaluate:
-            branch_solution = solve_branch_heuristic(optimizer, branch, optimize)
+            branch_solution = solve_branch_heuristic(
+                optimizer=optimizer, 
+                branch=branch, 
+                optimize=optimize, 
+                stabilize_extrema=stabilize_branch_extrema
+            )
             if branch_solution.status in ["stop", "integral", "infeasible"]:
                 continue
             elif branch_solution.status in ["heuristic"]:
@@ -145,11 +151,12 @@ def solve_heuristic(
     if optimizer.best_lb_result is None:
         raise RuntimeError("No primal solution has been found.")
 
-    return optimizer.best_lb_result
-
 
 def solve_branch_heuristic(
-    optimizer: OptimizerProtocol, branch: Branch, optimize: bool
+    optimizer: OptimizerProtocol, 
+    branch: Branch, 
+    optimize: bool, 
+    stabilize_extrema: bool
 ) -> BranchSolution:
 
     if not optimizer.rng:
@@ -159,14 +166,19 @@ def solve_branch_heuristic(
         return BranchSolution(status="infeasible", branch=branch)
 
     # compute lower bound LB^n using forced solution
-    forced_lb_result = optimizer.solve_primal_for_branch(branch, "forced_lower_bound")
+    forced_lb_result = optimizer.solve_primal_for_branch(
+        branch=branch, 
+        sol_type="forced_lower_bound",
+        compute_extrema=True, 
+        stabilize_extrema=stabilize_extrema
+    )
 
     optimizer.output.subsection("Lower-Bound Candidate")
     optimizer.output.metric("Objective", forced_lb_result.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
     # heuristic:
-    if len(branch.forced_match) == 0 and len(branch.forced_unmatch) == 0:
+    if not branch.forced_match and not branch.forced_unmatch:
         optimizer.instance_summary.forced_lower_bound = forced_lb_result.platform_profit
 
     # update global lower bound if forced lower bound is tighter
@@ -195,7 +207,12 @@ def solve_branch_heuristic(
 
     # compute upper bound UB^n using forced solution, LP relaxation
     # (note that min cost set is optimal if you can pay unmatched)
-    forced_ub_result = optimizer.solve_primal_for_branch(branch, "forced_upper_bound")
+    forced_ub_result = optimizer.solve_primal_for_branch(
+        branch=branch, 
+        sol_type="forced_upper_bound",
+        compute_extrema=True,
+        stabilize_extrema=stabilize_extrema
+    )
 
     optimizer.output.subsection("Upper-Bound Candidate")
     optimizer.output.metric("Objective", forced_ub_result.platform_profit)
@@ -215,7 +232,7 @@ def solve_branch_heuristic(
 
     if not can_improve:
         optimizer.output.message(
-            "Reason: branch upper bound cannot improve on the global lower bound within tolerance.",
+            "Reason: branch upper bound cannot improve on the global lower bound.",
             indent=1,
         )
 
@@ -239,20 +256,20 @@ def solve_branch_heuristic(
 
     # heuristic: optional optimize flag
     if (
-        forced_ub_result.max_intermediary_welfare_result is None
-        or forced_ub_result.max_intermediary_welfare_result.intermediary_profits is None):
+        forced_ub_result.max_farmer_welfare_result is None
+        or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None):
         raise RuntimeError("updated_intermediary_profits is None.")
 
-    max_int_welfare_int_profits = (
-        forced_ub_result.max_intermediary_welfare_result.intermediary_profits
+    max_farmer_welfare_int_profits = (
+        forced_ub_result.max_farmer_welfare_result.intermediary_profits
     )
 
     if optimize:
-        intermediary_profits = max_int_welfare_int_profits
+        intermediary_profits = max_farmer_welfare_int_profits
     else:
         intermediary_profits = {
             intermediary_id: optimizer.rng.uniform(0, 1)
-            if max_int_welfare_int_profits[intermediary_id] > optimizer.RANDOM_BRANCH_TOL
+            if max_farmer_welfare_int_profits[intermediary_id] > optimizer.RANDOM_BRANCH_TOL
             else 0.0
             for intermediary_id in optimizer.intermediary_ids
         }
@@ -283,8 +300,8 @@ def solve_branch_heuristic(
 
 
 def solve_exact(
-    optimizer: OptimizerProtocol,
-) -> BranchPrimalResult:
+    optimizer: OptimizerProtocol
+) -> None:
     """Perform a full exact branch-and-price solver.
 
     This method orchestrates branching on fractional variables and
@@ -298,7 +315,10 @@ def solve_exact(
 
     while True:
         for branch in branches_to_evaluate:
-            branch_solution = solve_branch_exact(optimizer, branch)
+            branch_solution = solve_branch_exact(
+                optimizer=optimizer, 
+                branch=branch
+            )
             if branch_solution.status in ["stop", "integral", "infeasible"]:
                 continue
             elif branch_solution.status in ["fractional"]:
@@ -422,10 +442,11 @@ def solve_exact(
     if optimizer.best_lb_result is None:
         raise RuntimeError("No primal solution has been found.")
 
-    return optimizer.best_lb_result
 
-
-def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSolution:
+def solve_branch_exact(
+    optimizer: OptimizerProtocol, 
+    branch: Branch
+) -> BranchSolution:
     """Perform an exact branch-and-price iteration on a given branch.
 
     Parameters
@@ -443,12 +464,20 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
         return BranchSolution(status="infeasible", branch=branch)
 
     # compute lower bound LB^n using forced solution
-    forced_lb_result = optimizer.solve_primal_for_branch(branch, "forced_lower_bound")
+    forced_lb_result = optimizer.solve_primal_for_branch(
+        branch=branch, 
+        sol_type="forced_lower_bound",
+        compute_extrema=False,
+        stabilize_extrema=False
+    )
     forced_lb_platform_profit = forced_lb_result.platform_profit
 
     optimizer.output.subsection("Lower-Bound Candidate")
     optimizer.output.metric("Objective", forced_lb_platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
+
+    if not branch.forced_match and not branch.forced_unmatch:
+        optimizer.instance_summary.forced_lower_bound = forced_lb_result.platform_profit
 
     # update global lower bound if forced lower bound is tighter
     if optimizer.exceeds_global_lb(forced_lb_platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL):
@@ -473,7 +502,12 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     optimizer.output.blank()
 
     # compute upper bound UB^n using forced solution, LP relaxation
-    forced_ub_solution = optimizer.solve_primal_for_branch(branch, "forced_upper_bound")
+    forced_ub_solution = optimizer.solve_primal_for_branch(
+        branch=branch, 
+        sol_type="forced_upper_bound",
+        compute_extrema=False,
+        stabilize_extrema=False
+    )
 
     optimizer.output.subsection("Forced Upper Bound")
     optimizer.output.metric("Objective", forced_ub_solution.platform_profit)
@@ -488,25 +522,31 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     optimizer.output.metric("Decision", "Retain" if can_improve else "Prune")
     if not can_improve:
         optimizer.output.message(
-            "Reason: branch upper bound cannot improve on the global lower bound within tolerance.",
+            "Reason: branch upper bound cannot improve on the global lower bound.",
             indent=1,
         )
         return BranchSolution(status="stop", branch=branch)
 
     # otherwise, solve primal and dual restricted problems w/ generating columns and cutting rows
+    optimizer.output.subsection("Exact")
     iteration = 0
     while True:
-        optimizer.output.iteration(iteration, "Exact Iteration")
+        optimizer.output.iteration(iteration, "Iteration")
 
         dual_result = optimizer.solve_dual_for_branch(branch)
-        primal_result = optimizer.solve_primal_for_branch(branch, "exact")
+        primal_result = optimizer.solve_primal_for_branch(
+            branch=branch,
+            sol_type="exact",
+            compute_extrema=False,
+            stabilize_extrema=False
+        )
 
         optimizer.output.metric("Dual objective", dual_result.objective_value)
         optimizer.output.metric("Primal objective", primal_result.platform_profit)
         optimizer.output.metric("Columns added", dual_result.n_added_columns, precision=0)
-        optimizer.output.metric("Rows added", primal_result.n_added_rows, precision=0)
+        optimizer.output.metric("Rows added", primal_result.primary_n_added_rows, precision=0)
 
-        if dual_result.n_added_columns == 0 and primal_result.n_added_rows == 0:
+        if dual_result.n_added_columns == 0 and primal_result.primary_n_added_rows == 0:
             break
         else:
             iteration += 1
@@ -525,7 +565,7 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
 
     if not can_improve:
         optimizer.output.message(
-            "Reason: branch upper bound cannot improve on the global lower bound within tolerance.",
+            "Reason: branch upper bound cannot improve on the global lower bound.",
             indent=1,
         )
         return BranchSolution(status="stop", branch=branch)
@@ -533,9 +573,9 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
     # check if solution is integral by checking marginal intermediary probabilities
     solution_is_integral = True
     intermediary_probabilities = {}
+    intermediary_set_probabilities = primal_result.primary_result.intermediary_set_probabilities
     for intermediary_id in optimizer.intermediary_ids:
         probability = 0.0
-        intermediary_set_probabilities = primal_result.primary_result.intermediary_set_probabilities
         for intermediary_set in intermediary_set_probabilities:
             if intermediary_id in intermediary_set:
                 probability += intermediary_set_probabilities[intermediary_set]
@@ -589,6 +629,7 @@ def solve_branch_exact(optimizer: OptimizerProtocol, branch: Branch) -> BranchSo
             fractional_probs,
             key=lambda intermediary_id: abs(0.5 - fractional_probs[intermediary_id]),
         )
+
         return BranchSolution(
             status="fractional",
             branch=branch,

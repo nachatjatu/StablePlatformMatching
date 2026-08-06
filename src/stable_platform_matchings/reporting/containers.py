@@ -114,13 +114,12 @@ class OptimizationResult:
             "dirt_distance_penalty": self.dirt_distance_penalty,
         }
 
-
 @dataclass
 class BranchPrimalResult:
     """Primary platform optimization and welfare reoptimizations."""
 
     primary_result: OptimizationResult
-    n_added_rows: int
+    primary_n_added_rows: int
 
     max_intermediary_welfare_result: (
         OptimizationResult | None
@@ -201,6 +200,13 @@ class InstanceSummary:
     upper_bounds: list = field(default_factory=list)
     timestamps: list = field(default_factory=list)
     oracle_calls: list = field(default_factory=list)
+    optimality_gaps: list[float] = field(default_factory=list)
+    relative_optimality_gaps: list[float] = field(default_factory=list)
+
+    abs_gap: float = field(default_factory=float, init=False)
+    rel_gap: float = field(default_factory=float, init=False)
 
     forced_lower_bound: float | None = None
     forced_upper_bound: float | None = None
+
+    

@@ -88,10 +88,14 @@ class OptimizerParams:
         if type(self.threads) is not int :
                     raise TypeError(f"threads must be int, got {type(self.threads).__name__}")
         
-        if type(self.vrp_time_limit_seconds) is not float :
-            raise TypeError(
-                f"threads must be float, got {type(self.vrp_time_limit_seconds).__name__}"
-        )
+        if (
+            not isinstance(self.vrp_time_limit_seconds, Real)
+            or isinstance(self.vrp_time_limit_seconds, bool)
+        ):
+            raise TypeError("vrp_time_limit_seconds must be numeric")
+
+        if self.vrp_time_limit_seconds <= 0:
+            raise ValueError("vrp_time_limit_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +107,7 @@ class SolverOptions:
     early_stop: bool = False
     aggregate: bool = False
     pay_unmatched: bool = False
+    stabilize_branch_extrema: bool = False
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:
@@ -125,11 +130,3 @@ class SolverOptions:
 
             if type(value) is not bool:
                 raise TypeError(f"{name} must be bool, got {type(value).__name__}")
-
-    def validate_for_strategy(self, strategy: str) -> None:
-        if strategy == "exact" and self.pay_unmatched:
-            raise ValueError(
-                "The exact strategy does not support "
-                "pay_unmatched=True because dual column generation "
-                "is unavailable for that formulation."
-            )

@@ -5,7 +5,6 @@ import gurobipy as gp
 from ...domain.instance import Instance
 from ...domain.matching import Matching
 from ...domain.route import Route
-from .runtime import require_solution
 
 
 class GurobiTSPSolver:
@@ -116,7 +115,7 @@ class GurobiTSPSolver:
 
         model.optimize()
 
-        require_solution(model, "TSP")
+        self._require_solution(model, "TSP")
 
         objective = model.ObjVal
 
@@ -136,6 +135,11 @@ class GurobiTSPSolver:
             raise ValueError(f"Objective mismatch: {objective} != {alt_objective}")
 
         return [route], [objective]
+
+    @staticmethod
+    def _require_solution(model: gp.Model, context: str) -> None:
+        if model.SolCount == 0:
+            raise RuntimeError(f"{context} produced no feasible solution; status={model.Status}.")
 
 
 class GurobiVRPSolver:
@@ -303,7 +307,7 @@ class GurobiVRPSolver:
 
         model.optimize()
 
-        require_solution(model, "VRP")
+        self._require_solution(model, "VRP")
 
         total_cost = model.ObjVal
 
@@ -329,3 +333,8 @@ class GurobiVRPSolver:
             raise ValueError(f"Objective mismatch: {total_cost} != {alt_cost}")
 
         return matching
+
+    @staticmethod
+    def _require_solution(model: gp.Model, context: str) -> None:
+        if model.SolCount == 0:
+            raise RuntimeError(f"{context} produced no feasible solution; status={model.Status}.")
