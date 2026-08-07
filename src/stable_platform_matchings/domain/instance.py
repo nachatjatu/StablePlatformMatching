@@ -135,6 +135,8 @@ class Instance:
         self.edge_to_root_farmers = {}
         self.entity_id_to_graph_node, self.graph_node_to_entity_ids = {}, {}
 
+        self.status_quo_quantities = self._calculate_avg_hist_quantities()
+
 
     def to_snapshot(self) -> dict[str, object]:
         def finite_or_none(value: float | None) -> float | None:
@@ -178,6 +180,7 @@ class Instance:
                     "dirt_to_mill": finite_or_none(
                         getattr(intermediary, "dirt_to_mill", None)
                     ),
+                    "status_quo_quantity": self.status_quo_quantities[intermediary.id]
                 }
                 for intermediary in self.intermediaries
             ],
