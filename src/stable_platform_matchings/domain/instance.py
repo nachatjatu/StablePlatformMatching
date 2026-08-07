@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Hashable
 from typing import TypeAlias
 from pathlib import Path
+import math
 
 import networkx as nx
 import yaml
@@ -134,27 +135,77 @@ class Instance:
         self.edge_to_root_farmers = {}
         self.entity_id_to_graph_node, self.graph_node_to_entity_ids = {}, {}
 
-    def to_dict(self) -> dict[str, object]:
-        """
-        Return a summary of the instance as a dictionary.
 
-        Returns:
-            dict: dictionary mapping attribute strings to their respective objects.
-        """
-
-        farmer_quantities = {farmer.id: farmer.quantity for farmer in self.farmers}
-        status_quo_intermediaries = {farmer.id: farmer.intermediary_id for farmer in self.farmers}
+    def to_snapshot(self) -> dict[str, object]:
+        def finite_or_none(value: float | None) -> float | None:
+            if value is None or not math.isfinite(value):
+                return None
+            return float(value)
 
         return {
             "instance_id": self.instance_id,
-            "farmer_quantities": farmer_quantities,
-            "truck_fixed_cost": self.truck_fixed_cost,
-            "fruit_price_per_ton": self.fruit_price_per_ton,
-            "lc_to_usd": self.lc_to_usd,
-            "n_intermediaries": len(self.intermediaries),
-            "n_farmers": len(self.farmers),
-            "status_quo_intermediaries": status_quo_intermediaries,
-            "status_quo_quantities": self._calculate_avg_hist_quantities(),
+            "source": self.source,
+            "farmers": [
+                {
+                    "id": farmer.id,
+                    "quantity": farmer.quantity,
+                    "location": list(farmer.location),
+                    "intermediary_id": farmer.intermediary_id,
+                    "dist_to_mill": finite_or_none(
+                        getattr(farmer, "dist_to_mill", None)
+                    ),
+                    "dirt_to_mill": finite_or_none(
+                        getattr(farmer, "dirt_to_mill", None)
+                    ),
+                    "paved_to_mill": finite_or_none(
+                        getattr(farmer, "paved_to_mill", None)
+                    ),
+                }
+                for farmer in self.farmers
+            ],
+            "intermediaries": [
+                {
+                    "id": intermediary.id,
+                    "capacity": intermediary.capacity,
+                    "location": list(intermediary.location),
+                    "hist_sets": [
+                        sorted(hist_set)
+                        for hist_set in intermediary.hist_sets
+                    ],
+                    "dist_to_mill": finite_or_none(
+                        getattr(intermediary, "dist_to_mill", None)
+                    ),
+                    "dirt_to_mill": finite_or_none(
+                        getattr(intermediary, "dirt_to_mill", None)
+                    ),
+                }
+                for intermediary in self.intermediaries
+            ],
+            "mill": {
+                "id": self.mill.id,
+                "location": list(self.mill.location),
+            },
+            "constants": {
+                "truck_capacity_tons": self.truck_capacity_tons,
+                "truck_fixed_cost": self.truck_fixed_cost,
+                "truck_cost_per_m": self.truck_cost_per_m,
+                "fruit_price_per_ton": self.fruit_price_per_ton,
+                "lc_to_usd": self.lc_to_usd,
+            },
+            "distances": {
+                "total": {
+                    key: finite_or_none(value)
+                    for key, value in self.dist_to_mill.items()
+                },
+                "dirt": {
+                    key: finite_or_none(value)
+                    for key, value in self.dirt_to_mill.items()
+                },
+                "paved": {
+                    key: finite_or_none(value)
+                    for key, value in self.paved_to_mill.items()
+                },
+            },
         }
 
     @classmethod

@@ -9,6 +9,9 @@ from typing import Any
 
 import numpy as np
 import os
+import json
+import gzip
+import math
 
 from stable_platform_matchings import Optimizer
 from stable_platform_matchings.optimization.options import OptimizerParams, SolverOptions
@@ -30,6 +33,142 @@ HET_COST_MEAN = 0.0
 HET_COST_SD = 100_000.0
 
 VRP_TIME_LIMIT_SECONDS = 1800
+
+def encode_nonfinite(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if value == math.inf:
+            return "Infinity"
+        if value == -math.inf:
+            return "-Infinity"
+        return value
+
+    if isinstance(value, dict):
+        return {
+            str(key): encode_nonfinite(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [encode_nonfinite(item) for item in value]
+
+    if isinstance(value, (set, frozenset)):
+        return [
+            encode_nonfinite(item)
+            for item in sorted(value)
+        ]
+
+    return value
+
+def find_nonfinite(
+    value: Any,
+    path: str = "payload",
+) -> list[tuple[str, Any]]:
+    found: list[tuple[str, Any]] = []
+
+    if isinstance(value, (float, np.floating)):
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            found.append((path, value))
+        return found
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(
+                find_nonfinite(
+                    item,
+                    f"{path}[{key!r}]",
+                )
+            )
+        return found
+
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found.extend(
+                find_nonfinite(
+                    item,
+                    f"{path}[{index}]",
+                )
+            )
+        return found
+
+    if isinstance(value, (set, frozenset)):
+        for index, item in enumerate(value):
+            found.extend(
+                find_nonfinite(
+                    item,
+                    f"{path}[set_item_{index}]",
+                )
+            )
+
+    return found
+
+def json_default(value: Any) -> Any:
+    """Convert supported non-standard values into JSON-compatible data."""
+    if isinstance(value, np.integer):
+        return int(value)
+
+    if isinstance(value, np.floating):
+        return float(value)
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    raise TypeError(
+        f"Object of type {type(value).__name__} "
+        "is not JSON serializable"
+    )
+
+def save_json_gz_exclusively(
+    payload: dict[str, Any],
+    save_path: Path,
+) -> None:
+    """
+    Save gzip-compressed JSON atomically without overwriting.
+    """
+    if not save_path.name.endswith(".json.gz"):
+        raise ValueError("save_path must end with .json.gz")
+
+    temporary_path = save_path.with_name(
+        save_path.name + ".tmp"
+    )
+
+    try:
+        with gzip.open(
+            temporary_path,
+            "xt",
+            encoding="utf-8",
+            compresslevel=6,
+        ) as file:
+            json.dump(
+                payload,
+                file,
+                default=json_default,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+
+        if save_path.exists():
+            raise FileExistsError(
+                f"Result already exists: {save_path}"
+            )
+
+        temporary_path.replace(save_path)
+
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 def get_solver_threads() -> int:
     for var in ("SLURM_CPUS_PER_TASK", "GUROBI_THREADS"):
@@ -92,7 +231,7 @@ def sample_het_costs(
     """Sample heterogeneous costs for every intermediary."""
     return {
         intermediary.id: float(
-            2.0 * instance.dist_to_mill[intermediary.id]
+            4.0 * instance.dist_to_mill[intermediary.id]
             + rng.normal(HET_COST_MEAN, HET_COST_SD)
         )
         for intermediary in instance.intermediaries
@@ -182,6 +321,7 @@ def run_one(
     summary = optimizer.solve(options)
 
     return {
+        "schema_version": 1,
         "metadata": {
             "run_index": run_index,
             "optimizer_seed": optimizer_seed,
@@ -200,37 +340,8 @@ def run_one(
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary": summary,
+        "summary": summary.return_dict(),
     }
-
-
-def save_pickle_exclusively(
-    payload: dict[str, Any],
-    save_path: Path,
-) -> None:
-    """
-    Save without silently overwriting an existing result.
-
-    A temporary file is written first and then atomically moved into place.
-    """
-    temporary_path = save_path.with_suffix(
-        save_path.suffix + ".tmp"
-    )
-
-    try:
-        with temporary_path.open("xb") as file:
-            pickle.dump(payload, file, protocol=pickle.HIGHEST_PROTOCOL)
-
-        # refuse to replace an existing completed result.
-        if save_path.exists():
-            raise FileExistsError(f"Result already exists: {save_path}")
-
-        temporary_path.replace(save_path)
-
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
-
 
 def main() -> None:
     if len(sys.argv) != 2:
@@ -242,7 +353,7 @@ def main() -> None:
     instances_path = data_path / "anon_14_day_instances"
     graph_path = data_path / "graph_0-14960_00_new.pickle"
 
-    results_path = Path("experiments") / "exp_1" / "results" / f"job_{job_id}"
+    results_path = Path("results") / "exp_1" / f"job_{job_id}"
 
     if not instances_path.is_dir():
         raise FileNotFoundError(f"Instance directory does not exist: {instances_path}")
@@ -303,9 +414,28 @@ def main() -> None:
 
         payload["experiment_metadata"] = experiment_metadata
 
-        save_path = results_path / f"job_{job_id}_run_{run_index}.pkl"
+        save_path = (
+            results_path
+            / f"job_{job_id}_run_{run_index}.json.gz"
+        )
 
-        save_pickle_exclusively(payload=payload, save_path=save_path,)
+        safe_payload = encode_nonfinite(payload)
+
+        nonfinite_values = find_nonfinite(safe_payload)
+
+        if nonfinite_values:
+            print("Found non-finite values:")
+            for path, value in nonfinite_values:
+                print(f"  {path} = {value!r}")
+
+            raise ValueError(
+                f"Payload contains {len(nonfinite_values)} non-finite value(s)"
+            )
+
+        save_json_gz_exclusively(
+            payload=safe_payload,
+            save_path=save_path,
+        )
 
         print(f"Saved {save_path}")
 

@@ -177,7 +177,7 @@ class Optimizer:
 
         # construct instance summary
         self.instance_summary = InstanceSummary(
-            instance=self.instance, 
+            instance_snapshot=self.instance.to_snapshot(), 
             params=self.params, 
             strategy=self.options.strategy
         )
@@ -655,7 +655,6 @@ class Optimizer:
             ).getValue()
 
             result = OptimizationResult(
-                instance=self.instance,
                 intermediary_set_probabilities=set_probabilities,
                 farmer_payments=farmer_payments,
                 intermediary_profits=intermediary_profits,

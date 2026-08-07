@@ -31,9 +31,6 @@ class OptimizationResult:
     The result may be integral or fractional. A concrete matching can only be
     recovered directly when `selected_intermediaries` is not None.
     """
-
-    instance: Instance
-
     intermediary_set_probabilities: IntermediarySetProbabilities
 
     farmer_payments: dict[str, float]
@@ -137,57 +134,33 @@ class BranchPrimalResult:
     def selected_intermediaries(self) -> IntermediarySet | None:
         return self.primary_result.selected_intermediaries
 
+    def return_dict(self) -> dict[str, object]:
+        return {
+            "primary_result": self.primary_result.return_dict(),
+            "primary_n_added_rows": self.primary_n_added_rows,
+            "max_intermediary_welfare_result": (
+                self.max_intermediary_welfare_result.return_dict()
+                if self.max_intermediary_welfare_result is not None
+                else None
+            ),
+            "max_farmer_welfare_result": (
+                self.max_farmer_welfare_result.return_dict()
+                if self.max_farmer_welfare_result is not None
+                else None
+            ),
+        }
+
 @dataclass(frozen=True)
 class BranchDualResult:
     objective_value: float
     n_added_columns: int
 
-
-
-@dataclass
-class PlatformOutcome:
-    """Concrete implementable platform outcome with a recovered matching."""
-
-    optimization_result: OptimizationResult
-    matching: Matching
-
-    def __post_init__(self) -> None:
-        if not self.optimization_result.is_integral:
-            raise ValueError(
-                "Cannot create a concrete PlatformOutcome from a "
-                "fractional optimization result."
-            )
-
-    @property
-    def instance(self) -> Instance:
-        return self.optimization_result.instance
-
-    @property
-    def selected_intermediaries(self) -> IntermediarySet:
-        selected = self.optimization_result.selected_intermediaries
-
-        if selected is None:
-            raise RuntimeError("PlatformOutcome requires an integral result.")
-
-        return selected
-
-    @property
-    def farmer_payments(self) -> dict[str, float]:
-        return self.optimization_result.farmer_payments
-
-    @property
-    def intermediary_profits(self) -> dict[str, float]:
-        return self.optimization_result.intermediary_profits
-
-    @property
-    def platform_profit(self) -> float:
-        return self.optimization_result.platform_profit
-
 @dataclass
 class InstanceSummary:
     """Final platform outcome and optimization-run diagnostics."""
 
-    instance: Instance
+    instance_snapshot: dict[str, object]
+    
     params: OptimizerParams
     strategy: str
 
@@ -209,4 +182,37 @@ class InstanceSummary:
     forced_lower_bound: float | None = None
     forced_upper_bound: float | None = None
 
-    
+    def return_dict(self) -> dict[str, object]:
+        return {
+            "instance_snapshot": self.instance_snapshot,
+            "params": {
+                "het_costs": dict(self.params.het_costs),
+                "epsilons": dict(self.params.epsilons),
+                "backend": self.params.backend,
+                "vrp_mode": self.params.vrp_mode,
+                "vrp_time_limit_seconds": (
+                    self.params.vrp_time_limit_seconds
+                ),
+                "threads": self.params.threads,
+            },
+            "strategy": self.strategy,
+            "platform_solve_result": (
+                self.platform_solve_result.return_dict()
+                if self.platform_solve_result is not None
+                else None
+            ),
+            "total_time": self.total_time,
+            "total_oracle_calls": self.total_oracle_calls,
+            "lower_bounds": list(self.lower_bounds),
+            "upper_bounds": list(self.upper_bounds),
+            "timestamps": list(self.timestamps),
+            "oracle_calls": list(self.oracle_calls),
+            "optimality_gaps": list(self.optimality_gaps),
+            "relative_optimality_gaps": list(
+                self.relative_optimality_gaps
+            ),
+            "abs_gap": self.abs_gap,
+            "rel_gap": self.rel_gap,
+            "forced_lower_bound": self.forced_lower_bound,
+            "forced_upper_bound": self.forced_upper_bound,
+        }
