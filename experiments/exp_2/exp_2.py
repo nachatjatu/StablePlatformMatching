@@ -19,20 +19,19 @@ from stable_platform_matchings.domain.instance import Instance
 from stable_platform_matchings.graphs.road_graphs import RoadGraph
 
 
-N_RUNS = 10
+N_RUNS = 1
 BASE_SEED = 20260806
 
 MIN_QUANTITY = 0.1
 MAX_QUANTITY = 9.0
 MAX_PERTURB = 0.5
 
-MIN_EPSILON = 0.0
-MAX_EPSILON = 6.0
-
 HET_COST_MEAN = 0.0
 HET_COST_SD = 100_000.0
 
 VRP_TIME_LIMIT_SECONDS = 1800
+
+EPSILONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 def encode_nonfinite(value: Any) -> Any:
     if isinstance(value, float):
@@ -215,10 +214,9 @@ def sample_epsilons(
     rng: np.random.Generator,
 ) -> dict[str, float]:
     """Sample an epsilon for every intermediary."""
+    epsilon = rng.choice(EPSILONS)
     return {
-        intermediary.id: float(
-            rng.uniform(MIN_EPSILON, MAX_EPSILON)
-        )
+        intermediary.id: epsilon
         for intermediary in instance.intermediaries
     }
 
@@ -302,7 +300,12 @@ def run_one(
         threads=solver_threads
     )
 
-    options = SolverOptions(
+    optimizer = Optimizer(
+        instance=instance,
+        params=params,
+    )
+
+    vanilla_options = SolverOptions(
         strategy="heuristic_optimized",
         structured_farmer_payments=False,
         dominance_constraints=False,
@@ -312,12 +315,32 @@ def run_one(
         seed=optimizer_seed
     )
 
-    optimizer = Optimizer(
-        instance=instance,
-        params=params,
+    summary_vanilla = optimizer.solve(vanilla_options)
+
+    structured_options = SolverOptions(
+        strategy="heuristic_optimized",
+        structured_farmer_payments=True,
+        dominance_constraints=False,
+        early_stop=False,
+        aggregate=True,
+        pay_unmatched=False,
+        seed=optimizer_seed
     )
 
-    summary = optimizer.solve(options)
+    summary_structured = optimizer.solve(structured_options)
+
+    dominance_options = SolverOptions(
+        strategy="heuristic_optimized",
+        structured_farmer_payments=False,
+        dominance_constraints=True,
+        early_stop=False,
+        aggregate=True,
+        pay_unmatched=False,
+        seed=optimizer_seed
+    )
+
+    summary_dominance = optimizer.solve(dominance_options)
+
 
     return {
         "schema_version": 1,
@@ -339,7 +362,9 @@ def run_one(
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary": summary.return_dict(),
+        "summary_vanilla": summary_vanilla.return_dict(),
+        "summary_structured": summary_structured.return_dict(),
+        "summary_dominance": summary_dominance.return_dict(),
     }
 
 def main() -> None:
@@ -352,7 +377,7 @@ def main() -> None:
     instances_path = data_path / "anon_14_day_instances"
     graph_path = data_path / "graph_0-14960_00_new.pickle"
 
-    results_path = Path("results") / "exp_1" / f"job_{job_id}"
+    results_path = Path("results") / "exp_2" / f"job_{job_id}"
 
     if not instances_path.is_dir():
         raise FileNotFoundError(f"Instance directory does not exist: {instances_path}")
@@ -392,8 +417,6 @@ def main() -> None:
             "min_quantity": MIN_QUANTITY,
             "max_quantity": MAX_QUANTITY,
             "max_perturb": MAX_PERTURB,
-            "min_epsilon": MIN_EPSILON,
-            "max_epsilon": MAX_EPSILON,
             "het_cost_mean": HET_COST_MEAN,
             "het_cost_sd": HET_COST_SD,
             "vrp_time_limit_seconds": (

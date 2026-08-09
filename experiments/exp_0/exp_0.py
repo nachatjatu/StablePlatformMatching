@@ -352,7 +352,7 @@ def main() -> None:
     instances_path = data_path / "anon_14_day_instances"
     graph_path = data_path / "graph_0-14960_00_new.pickle"
 
-    results_path = Path("results") / "exp_1" / f"job_{job_id}"
+    results_path = Path("results") / "exp_0" / f"job_{job_id}"
 
     if not instances_path.is_dir():
         raise FileNotFoundError(f"Instance directory does not exist: {instances_path}")
@@ -378,7 +378,7 @@ def main() -> None:
     solver_threads = get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_1",
+        "experiment": "exp_0",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),

@@ -221,7 +221,7 @@ class Optimizer:
 
         final_result = self.solve_primal_for_branch(
             final_branch,
-            sol_type="forced_lower_bound",
+            sol_type="exact",
             compute_extrema=True,
             stabilize_extrema=True,
         )
@@ -244,7 +244,8 @@ class Optimizer:
             denominator = max(abs(self.best_lb), 1.0)
             rel_gap = max(0.0, abs_gap) / denominator
 
-        self.instance_summary.platform_solve_result = final_result
+        # self.instance_summary.platform_solve_result = final_result
+        self.instance_summary.platform_solve_result = self.best_lb_result
         self.instance_summary.total_time = time.time() - self.instance_summary.start_time
         self.instance_summary.total_oracle_calls = self.total_oracle_calls
 
@@ -321,7 +322,7 @@ class Optimizer:
         Returns:
             PrimalSolution: summarizes the solution including profits and cut information.
         """
-
+        
         # first get all valid intermediary selections
         # consistent with branch forced match/unmatch restrictions
         valid_intermediary_sets = [
@@ -563,6 +564,7 @@ class Optimizer:
                     # solve the prize-collecting TSP
                     start_tsp_time = time.time()
                     candidate_routes, candidate_objs = self.tsp_solver.solve(prizes)
+                    
                     if not candidate_routes:
                         self.output.warning(
                             f"TSP returned no feasible routes for {intermediary.id}; "
@@ -673,6 +675,7 @@ class Optimizer:
 
             return result
 
+
         # extract solution information and add to solution summary
         primary_rows, platform_profit = optimize_with_separation(
             platform_profit_expr,
@@ -739,6 +742,7 @@ class Optimizer:
             model.optimize()
             self._require_solution(model, "Maximum farmer-welfare solve")
             max_farmer_welfare = model.ObjVal
+
 
         max_farmer_welfare_platform_profit = platform_profit_expr.getValue()
         max_farmer_welfare_result = _extract_result(
