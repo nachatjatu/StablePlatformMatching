@@ -54,8 +54,6 @@ class RoadGraph:
         if not components:
             raise ValueError("The road graph contains no nodes.")
 
-        print("Using corrected graph algorithm")
-
         main_component = max(components, key=len)
         main_connector = list(G.subgraph(main_component).nodes())[0]
 

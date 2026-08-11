@@ -61,6 +61,8 @@ class Optimizer:
             ValueError: _description_
         """
 
+        print("Using new version of optimizer with pay_unmatched")
+
         params.validate(instance)
 
         self.params = params
@@ -141,8 +143,6 @@ class Optimizer:
         """
 
         self.options = options
-
-        self._validate_for_strategy()
         
         self._print_solver_options()
 
@@ -396,7 +396,7 @@ class Optimizer:
                 f"intermediary_unmatched_{intermediary_id}",
             )
 
-        # constraint 4: pay intermediaries at most their max. capacity * fruit price = max. value
+        # constraint 4: if applicable, do not pay unmatched intermediaries
         if sol_type in ["exact", "forced_lower_bound"]:
             if not self.options.pay_unmatched:
                 for intermediary in self.instance.intermediaries:
@@ -406,14 +406,8 @@ class Optimizer:
                         * intermediary.capacity
                         * self.instance.fruit_price_per_ton
                     )
-            else:
-                for intermediary in self.instance.intermediaries:
-                    model.addConstr(
-                        intermediary_profit_vars[intermediary.id]
-                        <= intermediary.capacity * self.instance.fruit_price_per_ton
-                    )
 
-        # constraint 5: if applicable, do not pay unmatched intermediaries
+        # constraint 5: if applicable, do not pay unmatched intermediaries (forced unmatch)
         if not self.options.pay_unmatched:
             model.addConstrs(
                 intermediary_profit_vars[intermediary_id] <= 0
@@ -453,6 +447,10 @@ class Optimizer:
             )
 
         # impose optional constraints for farmer structured payments and intermediary domination
+        fixed_payment = None
+        payment_per_quantity = None
+        paved_distance_penalty = None
+        dirt_distance_penalty = None
         if self.options.structured_farmer_payments:
             fixed_payment = model.addVar(
                 vtype=gp.GRB.CONTINUOUS, lb=-float("inf"), name="fixed_payment"
@@ -484,11 +482,6 @@ class Optimizer:
                     farmer_payment_vars[farmer.id] == base_payments - paved_penalty - dirt_penalty,
                     f"structured_farmer_payment_{farmer.id}",
                 )
-        else:
-            fixed_payment = None
-            payment_per_quantity = None
-            paved_distance_penalty = None
-            dirt_distance_penalty = None
 
         if self.options.dominance_constraints:
             self.output.collection("Applied dominance relations", self.dominance_relations)
@@ -785,17 +778,12 @@ class Optimizer:
         model.setParam("OutputFlag", 0)
         model.setParam("Threads", self.params.threads)
 
-        if self.options.pay_unmatched:
-            raise NotImplementedError(
-                "Dual column generation is not implemented for pay_unmatched=True."
-            )
-
         # create dual variables
         # dual variable corresponding to route-based stability cuts
         alpha = model.addVars(
             [
                 (intermediary.id, hist_set_index, route_set_index)
-                for intermediary in self.instance.intermediaries
+                for intermediary in self.instance.intermediaries            
                 for hist_set_index in range(len(self.active_hist_sets[intermediary.id]))
                 for route_set_index in self.route_by_farmer_ids_set
             ],
@@ -806,21 +794,29 @@ class Optimizer:
         # dual variable corresponding to constraint that intermediary set probabilities sum to one
         beta = model.addVar(vtype=gp.GRB.CONTINUOUS, lb=-float("inf"), name="beta")
 
-        # dual variables corresponding to intermediary-payment upper-bound constraints
-        lamb = model.addVars(self.intermediary_ids, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="lamb")
+        # dual variable corresponding to constraint that unmatched intermediaries are not paid
+        lamb: gp.tupledict | None = None
+
+        if not self.options.pay_unmatched:
+            lamb = model.addVars(
+                self.intermediary_ids, 
+                vtype=gp.GRB.CONTINUOUS, 
+                lb=0.0, 
+                name="lamb"
+            )
 
         # dual variables corresponding to intermediary-payment stability constraints
         mu = model.addVars(self.intermediary_ids, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="mu")
 
         # optional dual variables corresponding to optional primal
         #   structured farmer payment and domination constraints
+        gamma: gp.tupledict | None = None
         if self.options.structured_farmer_payments:
             gamma = model.addVars(
                 self.farmer_ids, vtype=gp.GRB.CONTINUOUS, lb=-float("inf"), name="gamma"
             )
-        else:
-            gamma = None
 
+        D: gp.tupledict | None = None
         if self.options.dominance_constraints:
             self.output.collection("Applied dominance relations", self.dominance_relations)
 
@@ -829,8 +825,6 @@ class Optimizer:
                     "Domination is enabled, but no dominance relations were generated."
                 )
             D = model.addVars(self.dominance_relations, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="D")
-        else:
-            D = None
 
         # dual constraint 1: corresponds to farmer_payment_vars in primal
         if gamma is not None:
@@ -862,6 +856,7 @@ class Optimizer:
                 )
         # dual constraint 2: corresponds to intermediary_profit_vars in primal
         if D is not None:
+
             self.output.collection("Applied dominance relations", self.dominance_relations)
 
             if not self.dominance_relations:
@@ -877,28 +872,43 @@ class Optimizer:
                     elif intermediary.id == intermediary_id2:
                         n_dominated_by += D[intermediary_id1, intermediary_id2]
 
+                lhs = -1 + mu[intermediary.id] + n_dominates - n_dominated_by
+
+                if lamb is not None:
+                    lhs -= lamb[intermediary.id]
+
                 model.addConstr(
-                    -1 + mu[intermediary.id] - lamb[intermediary.id] + n_dominates - n_dominated_by
-                    <= 0,
+                    lhs <= 0,
                     f"domination_constraint_{intermediary.id}",
                 )
         else:
-            for intermediary in self.instance.intermediaries:
-                model.addConstr(-1 + mu[intermediary.id] - lamb[intermediary.id] <= 0)
+            if lamb is not None:
+                for intermediary in self.instance.intermediaries:
+                    model.addConstr(-1 + mu[intermediary.id] - lamb[intermediary.id] <= 0)
+            else:
+                for intermediary in self.instance.intermediaries:
+                    model.addConstr(-1 + mu[intermediary.id] <= 0)
         # dual constraint 3: corresponds to intermediary_set_prob_vars in primal
-        model.addConstrs(
-            -self.intermediary_set_to_cost[intermediary_set]
-            + gp.quicksum(
-                lamb[intermediary_id]
-                * self.intermediary_id_to_capacity[intermediary_id]
-                * self.instance.fruit_price_per_ton
-                for intermediary_id in intermediary_set
+        if lamb is not None:
+            model.addConstrs(
+                -self.intermediary_set_to_cost[intermediary_set]
+                + gp.quicksum(
+                    lamb[intermediary_id]
+                    * self.intermediary_id_to_capacity[intermediary_id]
+                    * self.instance.fruit_price_per_ton
+                    for intermediary_id in intermediary_set
+                )
+                - beta
+                <= 0
+                for intermediary_set in self.intermediary_set_to_cost
+                if self._is_valid_intermediary_set(branch, intermediary_set)
             )
-            - beta
-            <= 0
-            for intermediary_set in self.intermediary_set_to_cost
-            if self._is_valid_intermediary_set(branch, intermediary_set)
-        )
+        else:
+            model.addConstrs(
+                -self.intermediary_set_to_cost[intermediary_set] - beta <= 0 
+                for intermediary_set in self.intermediary_set_to_cost 
+                if self._is_valid_intermediary_set(branch, intermediary_set)
+            )
         # dual constraint 4: corresponds to eta variable in primal
         for intermediary in self.instance.intermediaries:
             model.addConstr(
@@ -992,61 +1002,64 @@ class Optimizer:
         model.optimize()
         self._require_solution(model, "Initial dual solve")
 
-        # repeatedly add new stability cuts (cols) in response to violations
-        # until solution is stable
+        # column generation
         n_added_cols = 0
-        while True:
-            # prize new intermediary sets
-            intermediary_id_to_prize = {
-                self.intermediary_ids[i]: (
-                    lamb[self.intermediary_ids[i]].X
-                    * self.intermediary_id_to_capacity[self.intermediary_ids[i]]
-                    * self.instance.fruit_price_per_ton
-                )
-                for i in range(self.n_intermediaries)
-            }
-
-            # get best intermediary set, objective, and costs given prizes
-            result = self._get_best_intermediary_set(intermediary_id_to_prize, branch)
-            if result is None:
-                raise RuntimeError(
-                    "Branch became infeasible during dual column generation "
-                    "after passing branch initialization."
-                )
-            best_intermediary_set, best_obj, best_cost = result
-            best_intermediary_set = frozenset(best_intermediary_set)
-
-            # add the most violated intermediary set constraint and re-solve.
-            # stop when the pricing problem finds no intermediary set
-            # whose dual constraint is violated beyond COLUMN_TOL.
-            if best_obj > beta.X + Optimizer.COLUMN_TOL:
-                constr = (
-                    gp.quicksum(
-                        lamb[intermediary_id]
-                        * self.intermediary_id_to_capacity[intermediary_id]
+        if lamb is not None:
+            while True:
+                # prize new intermediary sets
+                intermediary_id_to_prize = {
+                    self.intermediary_ids[i]: (
+                        lamb[self.intermediary_ids[i]].X
+                        * self.intermediary_id_to_capacity[self.intermediary_ids[i]]
                         * self.instance.fruit_price_per_ton
-                        for intermediary_id in best_intermediary_set
                     )
-                    - beta
-                    - best_cost
-                    <= 0
-                )
+                    for i in range(self.n_intermediaries)
+                }
 
-                if best_intermediary_set in self.intermediary_set_to_cost:
-                    raise RuntimeError(f"Intermediary set {best_intermediary_set} already exists")
-                if not self._is_valid_intermediary_set(branch, best_intermediary_set):
+                # get best intermediary set, objective, and costs given prizes
+                result = self._get_best_intermediary_set(intermediary_id_to_prize, branch)
+                if result is None:
                     raise RuntimeError(
-                        f"Intermediary set {best_intermediary_set} is not valid for branch {branch}"
+                        "Branch became infeasible during dual column generation "
+                        "after passing branch initialization."
+                    )
+                
+                best_intermediary_set, best_obj, best_cost = result
+                best_intermediary_set = frozenset(best_intermediary_set)
+
+                # add the most violated intermediary set constraint and re-solve.
+                # stop when the pricing problem finds no intermediary set
+                # whose dual constraint is violated beyond COLUMN_TOL.
+                if best_obj > beta.X + Optimizer.COLUMN_TOL:
+                    constr = (
+                        gp.quicksum(
+                            lamb[intermediary_id]
+                            * self.intermediary_id_to_capacity[intermediary_id]
+                            * self.instance.fruit_price_per_ton
+                            for intermediary_id in best_intermediary_set
+                        )
+                        - beta
+                        - best_cost
+                        <= 0
                     )
 
-                self.intermediary_set_to_cost[best_intermediary_set] = best_cost
+                    if best_intermediary_set in self.intermediary_set_to_cost:
+                        raise RuntimeError(f"Intermediary set {best_intermediary_set} already exists")
+                    
+                    if not self._is_valid_intermediary_set(branch, best_intermediary_set):
+                        raise RuntimeError(
+                            f"Intermediary set {best_intermediary_set} is not valid for branch {branch}"
+                        )
 
-                model.addConstr(constr, f"intermediary_set_constraint_{n_added_cols}")
-                n_added_cols += 1
-                model.optimize()
-                self._require_solution(model, "Dual column-generation solve")
-            else:
-                break
+                    self.intermediary_set_to_cost[best_intermediary_set] = best_cost
+
+                    model.addConstr(constr, f"intermediary_set_constraint_{n_added_cols}")
+                    n_added_cols += 1
+                    model.optimize()
+                    self._require_solution(model, "Dual column-generation solve")
+
+                else:
+                    break
 
         return BranchDualResult(objective_value=model.ObjVal, n_added_columns=n_added_cols)
 
@@ -1429,11 +1442,3 @@ class Optimizer:
 
             label = field.name.replace("_", " ").title()
             self.output.metric(label, value)
-
-    def _validate_for_strategy(self) -> None:
-        if self.options.strategy == "exact" and self.options.pay_unmatched:
-            raise ValueError(
-                "The exact strategy does not support "
-                "pay_unmatched=True because dual column generation "
-                "is unavailable for that formulation."
-            )

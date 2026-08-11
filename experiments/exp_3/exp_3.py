@@ -6,6 +6,7 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
+import copy
 
 import numpy as np
 import os
@@ -302,7 +303,7 @@ def run_one(
         threads=solver_threads
     )
 
-    options = SolverOptions(
+    options_no_pay = SolverOptions(
         strategy="heuristic_optimized",
         structured_farmer_payments=False,
         dominance_constraints=False,
@@ -312,12 +313,27 @@ def run_one(
         seed=optimizer_seed
     )
 
+    options_pay = SolverOptions(
+        strategy="heuristic_optimized",
+        structured_farmer_payments=False,
+        dominance_constraints=False,
+        early_stop=False,
+        aggregate=True,
+        pay_unmatched=True,
+        seed=optimizer_seed
+    )
+
+
     optimizer = Optimizer(
         instance=instance,
         params=params,
     )
 
-    summary = optimizer.solve(options)
+    optimizer_no_pay = copy.deepcopy(optimizer)
+    optimizer_pay = copy.deepcopy(optimizer)
+
+    summary_no_pay = optimizer_no_pay.solve(options_no_pay)
+    summary_pay = optimizer_pay.solve(options_pay)
 
     return {
         "schema_version": 1,
@@ -339,7 +355,8 @@ def run_one(
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary": summary.return_dict(),
+        "summary_no_pay": summary_no_pay.return_dict(),
+        "summary_pay": summary_pay.return_dict()
     }
 
 def main() -> None:
@@ -352,7 +369,7 @@ def main() -> None:
     instances_path = data_path / "anon_14_day_instances"
     graph_path = data_path / "graph_0-14960_00_new.pickle"
 
-    results_path = Path("results") / "exp_0" / f"job_{job_id}"
+    results_path = Path("results") / "exp_3" / f"job_{job_id}"
 
     if not instances_path.is_dir():
         raise FileNotFoundError(f"Instance directory does not exist: {instances_path}")
@@ -378,7 +395,7 @@ def main() -> None:
     solver_threads = get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_0",
+        "experiment": "exp_3",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=exp_1
-#SBATCH --array=0-195%30
-#SBATCH --time=04:00:00
+#SBATCH --array=0-391%40
+#SBATCH --time=01:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
 #SBATCH --output=logs/exp_1/out/%x_%A_%a.out

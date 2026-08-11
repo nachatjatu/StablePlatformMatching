@@ -19,7 +19,7 @@ from stable_platform_matchings.domain.instance import Instance
 from stable_platform_matchings.graphs.road_graphs import RoadGraph
 
 
-N_RUNS = 1
+N_RUNS = 10
 BASE_SEED = 20260806
 
 MIN_QUANTITY = 0.1
@@ -216,7 +216,7 @@ def sample_epsilons(
     """Sample an epsilon for every intermediary."""
     epsilon = rng.choice(EPSILONS)
     return {
-        intermediary.id: epsilon
+        intermediary.id: float(epsilon)
         for intermediary in instance.intermediaries
     }
 
