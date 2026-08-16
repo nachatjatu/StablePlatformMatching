@@ -1,5 +1,3 @@
-import os
-
 import gurobipy as gp
 
 from ...domain.instance import Instance

@@ -31,7 +31,7 @@ MAX_HET_COST = 1_200_000.0
 
 HIGH_PROB = 0.28
 
-VRP_TIME_LIMIT_SECONDS = 300 # 5 minutes
+VRP_TIME_LIMIT_SECONDS = 10 * 60 # 10 minutes
 
 EPSILON = 2
 
@@ -300,7 +300,8 @@ def run_one(
     job_id: int,
     instance_path: Path,
     graph: Any,
-    solver_threads: int
+    solver_threads: int,
+    process_start
 ) -> dict[str, Any]:
     """
     Run one reproducible experiment and return the InstanceSummary together
@@ -378,7 +379,6 @@ def run_one(
         aggregate=True,
         pay_unmatched=False,
         seed=optimizer_seed,
-        deadline= time.time() + 4*3600 - 600
     )
 
     summary_early_stop = optimizer.solve(options)
@@ -406,6 +406,9 @@ def run_one(
     }
 
 def main() -> None:
+
+    process_start = time.time()
+
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python experiment.py JOB_ID")
     
@@ -477,7 +480,8 @@ def main() -> None:
         job_id=job_id,
         instance_path=instance_path,
         graph=graph,
-        solver_threads=solver_threads
+        solver_threads=solver_threads,
+        process_start=process_start
     )
 
     safe_run_payload = encode_nonfinite(run_payload)

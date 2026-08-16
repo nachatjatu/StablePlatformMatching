@@ -1,35 +1,8 @@
-import time
-
 import numpy as np
 
 from ...reporting.containers import BranchSolution
 from ..branch import Branch
 from .optimizer_protocol import OptimizerProtocol
-
-
-def _deadline_exceeded(optimizer: OptimizerProtocol) -> bool:
-    """True if a deadline was set and has passed."""
-    deadline = optimizer.options.deadline
-    return deadline is not None and time.time() >= deadline
-
-
-def _stop_for_deadline(optimizer: OptimizerProtocol, title: str) -> None:
-    """Record the current incumbent and mark the run as deadline-truncated."""
-    previous_lb = optimizer.best_lb
-    previous_ub = optimizer.best_ub
-
-    optimizer.instance_summary.deadline_exceeded = True
-
-    optimizer.record_summary()
-
-    print_bound_update(
-        optimizer,
-        title=title,
-        status="Wall-clock deadline reached; returning best incumbent found so far",
-        previous_lb=previous_lb,
-        previous_ub=previous_ub,
-        fill="!",
-    )
 
 
 def solve_heuristic(
@@ -54,12 +27,6 @@ def solve_heuristic(
                 continue
             elif branch_solution.status in ["heuristic"]:
                 active_branches.append(branch_solution)
-
-            # Check after every branch, not just once per round, since a
-            # single branch's VRP/TSP solves can themselves take a long time.
-            if optimizer.best_lb_result is not None and _deadline_exceeded(optimizer):
-                _stop_for_deadline(optimizer, title="Deadline Reached")
-                return
 
         if not active_branches:
             previous_lb = optimizer.best_lb
@@ -356,14 +323,6 @@ def solve_exact(
                 continue
             elif branch_solution.status in ["fractional"]:
                 active_branches.append(branch_solution)
-
-            # "exact" mode's optimality guarantee only holds if the tree is
-            # fully explored. A deadline hit means we return the best
-            # incumbent found so far, but it is NOT a certified optimum --
-            # deadline_exceeded=True on the summary flags this to callers.
-            if optimizer.best_lb_result is not None and _deadline_exceeded(optimizer):
-                _stop_for_deadline(optimizer, title="Deadline Reached (exact search incomplete)")
-                return
 
         if not active_branches:
             previous_lb = optimizer.best_lb
