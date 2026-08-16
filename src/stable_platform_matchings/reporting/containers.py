@@ -182,6 +182,12 @@ class InstanceSummary:
     forced_lower_bound: float | None = None
     forced_upper_bound: float | None = None
 
+    # True if the search was cut short by a SolverOptions.deadline rather
+    # than running to completion (branch exhaustion or early_stop). When
+    # True, best_lb / platform_solve_result are a valid feasible incumbent,
+    # but optimality (or the usual early_stop guarantee) is not certified.
+    deadline_exceeded: bool = False
+
     def return_dict(self) -> dict[str, object]:
         return {
             "instance_snapshot": self.instance_snapshot,
@@ -215,4 +221,5 @@ class InstanceSummary:
             "rel_gap": self.rel_gap,
             "forced_lower_bound": self.forced_lower_bound,
             "forced_upper_bound": self.forced_upper_bound,
+            "deadline_exceeded": self.deadline_exceeded,
         }

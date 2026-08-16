@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import os
+import time
 import json
 import gzip
 import math
@@ -305,6 +306,8 @@ def run_one(
     Run one reproducible experiment and return the InstanceSummary together
     with the information required to reproduce the sampled inputs.
     """
+
+    print("Building instance...")
     seed_sequence = np.random.SeedSequence(
         [BASE_SEED, job_id]
     )
@@ -328,16 +331,19 @@ def run_one(
         instance=initial_instance,
         rng=rng,
     )
-
+    print("Loading instance...")
     instance = Instance.from_yaml(
         instance_path,
         force_quantities=quantities,
     )
 
+    print("Sampling locations...")
     sample_locs(instance, rng, graph)
 
+    print("Setting graph...")
     instance.set_graph(RoadGraph(graph))
 
+    print("Setting relationships...")
     reset_relationships(instance, rng)
 
     epsilons = set_epsilons(
@@ -358,6 +364,7 @@ def run_one(
         threads=solver_threads
     )
 
+    print("Initializing optimizer...")
     optimizer = Optimizer(
         instance=instance,
         params=params,
@@ -370,10 +377,11 @@ def run_one(
         early_stop=False,
         aggregate=True,
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        deadline= time.time() + 4*3600 - 600
     )
 
-    summary_vanilla = optimizer.solve(options)
+    summary_early_stop = optimizer.solve(options)
 
 
     return {
@@ -394,7 +402,7 @@ def run_one(
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary_vanilla": summary_vanilla.return_dict(),
+        "summary_early_stop": summary_early_stop.return_dict(),
     }
 
 def main() -> None:
@@ -433,7 +441,7 @@ def main() -> None:
     solver_threads = get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_6_exact",
+        "experiment": "exp_6_heuristic",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),

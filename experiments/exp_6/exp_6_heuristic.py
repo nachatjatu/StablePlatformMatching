@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import os
+import time
 import json
 import gzip
 import math
@@ -376,7 +377,8 @@ def run_one(
         early_stop=True,
         aggregate=True,
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        deadline= time.time() + 4*3600 - 600
     )
 
     summary_early_stop = optimizer.solve(options)
