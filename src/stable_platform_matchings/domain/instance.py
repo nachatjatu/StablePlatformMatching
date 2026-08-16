@@ -350,11 +350,13 @@ class Instance:
         self.root_edges = dict(
             zip(self.entity_id_to_graph_node.keys(), list_root_edges, strict=True)
         )
-        self.tree_edges = []
+
+        seen = {}
         for f_id in self.root_edges:
             for edge in self.root_edges[f_id]:
-                if edge not in self.tree_edges:
-                    self.tree_edges.append(edge)
+                if edge not in seen:
+                    seen.setdefault(edge, None)
+        self.tree_edges = list(seen)
 
         # create tree ordering using DFS
         self.tree_order = list(nx.dfs_preorder_nodes(self.tree, source=self.mill_key))

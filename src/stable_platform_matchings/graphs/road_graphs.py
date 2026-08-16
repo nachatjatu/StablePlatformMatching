@@ -241,9 +241,12 @@ class RoadGraph:
 
         # create Graph and add direct edges between stops
         complete_graph = nx.Graph()
-        for stop_1, stop_2 in combinations(all_stops, 2):
-            weight = nx.shortest_path_length(G_pruned, stop_1, stop_2, weight="weight")
-            complete_graph.add_edge(stop_1, stop_2, weight=weight)
+        seen_stops = []
+        for stop_1 in all_stops:
+            weights = nx.single_source_dijkstra_path_length(G_pruned, stop_1, weight="weight")
+            for stop_2 in seen_stops:
+                complete_graph.add_edge(stop_1, stop_2, weight=weights[stop_2])
+            seen_stops.append(stop_1)
 
         # extract minimum spanning tree
         T_complete = nx.minimum_spanning_tree(complete_graph, weight="weight")
@@ -265,12 +268,16 @@ class RoadGraph:
         # create a subgraph of the original graph containing only
         # the edges in T that are in between the stops
         edges_to_add_subgraph = set()
-        for stop_1, stop_2 in combinations(all_stops, 2):
-            path = nx.shortest_path(T, stop_1, stop_2, weight="weight")
-            for s in range(len(path) - 1):
-                edge_fwd, edge_rev = (path[s], path[s + 1]), (path[s + 1], path[s])
-                if edge_fwd not in edges_to_add_subgraph and edge_rev not in edges_to_add_subgraph:
-                    edges_to_add_subgraph.add(edge_fwd)
+        seen_stops = []
+        for stop_1 in all_stops:
+            _, paths = nx.single_source_dijkstra(T, stop_1, weight="weight")
+            for stop_2 in seen_stops:
+                path = paths[stop_2]
+                for s in range(len(path) - 1):
+                    edge_fwd, edge_rev = (path[s], path[s + 1]), (path[s + 1], path[s])
+                    if edge_fwd not in edges_to_add_subgraph and edge_rev not in edges_to_add_subgraph:
+                        edges_to_add_subgraph.add(edge_fwd)
+            seen_stops.append(stop_1)
 
         self.iteratively_prune(T, all_stops_set)
 

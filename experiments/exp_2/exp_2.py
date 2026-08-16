@@ -403,7 +403,7 @@ def main() -> None:
     solver_threads = get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_1",
+        "experiment": "exp_2",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),

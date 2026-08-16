@@ -61,7 +61,7 @@ class Optimizer:
             ValueError: _description_
         """
 
-        print("Using new version of optimizer with pay_unmatched")
+        print("Using new version of optimizer with fixed max # of trucks")
 
         params.validate(instance)
 
@@ -1244,14 +1244,11 @@ class Optimizer:
     ) -> None:
         if aggregate:
             self.active_hist_sets = {
-                intermediary.id: (
-                    frozenset(
-                        farmer.id
-                        for farmer in self.instance.farmers
-                        if farmer.intermediary_id == intermediary.id
-                    ),
+                intermediary_id: (
+                    frozenset().union(*hist_sets),
                 )
-                for intermediary in self.instance.intermediaries
+                for intermediary_id, hist_sets
+                in self._original_hist_sets.items()
             }
         else:
             self.active_hist_sets = {
@@ -1341,7 +1338,7 @@ class Optimizer:
         self.output.metric("Cost", min_cost_matching.cost, precision=0)
         routing_cost_by_truck_count = {min_trucks: min_cost_matching.cost}
 
-        for n_trucks in range(min_trucks + 1, self.n_intermediaries + 1):
+        for n_trucks in range(min_trucks + 1, min(self.n_intermediaries + 1, min_trucks + Optimizer.N_MATCHINGS)):
             self.output.blank()
             self.output.subsubsection(f"Number of Trucks = {n_trucks}")
             if self.params.vrp_mode == "exact":
