@@ -272,7 +272,7 @@ class RoadGraph:
         for stop_1 in all_stops:
             _, paths = nx.single_source_dijkstra(T, stop_1, weight="weight")
             for stop_2 in seen_stops:
-                path = paths[stop_2]
+                path = cast(list, paths[stop_2])
                 for s in range(len(path) - 1):
                     edge_fwd, edge_rev = (path[s], path[s + 1]), (path[s + 1], path[s])
                     if edge_fwd not in edges_to_add_subgraph and edge_rev not in edges_to_add_subgraph:
