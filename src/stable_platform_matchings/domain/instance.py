@@ -354,8 +354,7 @@ class Instance:
         seen = {}
         for f_id in self.root_edges:
             for edge in self.root_edges[f_id]:
-                if edge not in seen:
-                    seen.setdefault(edge, None)
+                seen[edge] = None
         self.tree_edges = list(seen)
 
         # create tree ordering using DFS

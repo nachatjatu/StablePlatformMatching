@@ -305,6 +305,8 @@ def run_one(
     Run one reproducible experiment and return the InstanceSummary together
     with the information required to reproduce the sampled inputs.
     """
+
+    print("Building instance...")
     seed_sequence = np.random.SeedSequence(
         [BASE_SEED, job_id]
     )
@@ -328,16 +330,19 @@ def run_one(
         instance=initial_instance,
         rng=rng,
     )
-
+    print("Loading instance...")
     instance = Instance.from_yaml(
         instance_path,
         force_quantities=quantities,
     )
 
+    print("Sampling locations...")
     sample_locs(instance, rng, graph)
 
+    print("Setting graph...")
     instance.set_graph(RoadGraph(graph))
 
+    print("Setting relationships...")
     reset_relationships(instance, rng)
 
     epsilons = set_epsilons(
@@ -358,6 +363,7 @@ def run_one(
         threads=solver_threads
     )
 
+    print("Initializing optimizer...")
     optimizer = Optimizer(
         instance=instance,
         params=params,
