@@ -105,19 +105,13 @@ class SolverOptions:
     structured_farmer_payments: bool = False
     dominance_constraints: bool = False
     early_stop: bool = False
-    aggregate: bool = False
+    hist_set_method: str = "none"
     pay_unmatched: bool = False
     stabilize_branch_extrema: bool = False
-    deadline: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:
             raise TypeError(f"seed must be int, got {type(self.seed).__name__}")
-
-        if self.deadline is not None and (
-            not isinstance(self.deadline, (int, float)) or isinstance(self.deadline, bool)
-        ):
-            raise TypeError("deadline must be numeric or None")
         
         if type(self.strategy) is not str:
             raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")
@@ -129,7 +123,6 @@ class SolverOptions:
             "structured_farmer_payments",
             "dominance_constraints",
             "early_stop",
-            "aggregate",
             "pay_unmatched",
         ):
             value = getattr(self, name)

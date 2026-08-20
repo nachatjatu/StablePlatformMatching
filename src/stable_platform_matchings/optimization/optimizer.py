@@ -61,8 +61,6 @@ class Optimizer:
             ValueError: _description_
         """
 
-        print("Using new version of optimizer with fixed max # of trucks")
-
         params.validate(instance)
 
         self.params = params
@@ -94,7 +92,7 @@ class Optimizer:
             )
             for intermediary in self.instance.intermediaries
         }
-        self._configure_hist_sets(aggregate=False)
+        self._configure_hist_sets(hist_set_method="original")
 
         self.routing_cost_by_truck_count = self._initialize_routing_cost_by_truck_count()
 
@@ -149,7 +147,7 @@ class Optimizer:
         if self.options.structured_farmer_payments:
             self._verify_farmer_distances()
 
-        self._configure_hist_sets(self.options.aggregate)
+        self._configure_hist_sets(self.options.hist_set_method)
         self.dominance_relations = (
             self._calc_dominance() if self.options.dominance_constraints else []
         )
@@ -582,6 +580,7 @@ class Optimizer:
                         if (
                             violation > Optimizer.CUT_TOL
                             and farmer_ids_set not in new_route_by_farmer_ids_set
+                            and farmer_ids_set not in self.route_by_farmer_ids_set 
                         ):
                             start_time = time.time()
                             self._add_stability_cuts_for_route(
@@ -1184,6 +1183,8 @@ class Optimizer:
         for intermediary_id in required_intermediaries:
             del net_prizes[intermediary_id]
 
+        self._ensure_routing_costs_up_to(len_required)
+
         ordered_intermediaries = sorted(
             net_prizes.keys(), key=lambda x: net_prizes[x], reverse=True
         )
@@ -1240,9 +1241,9 @@ class Optimizer:
 
     def _configure_hist_sets(
         self,
-        aggregate: bool,
+        hist_set_method: str,
     ) -> None:
-        if aggregate:
+        if hist_set_method == "union":
             self.active_hist_sets = {
                 intermediary_id: (
                     frozenset().union(*hist_sets),
@@ -1250,11 +1251,33 @@ class Optimizer:
                 for intermediary_id, hist_sets
                 in self._original_hist_sets.items()
             }
-        else:
+        elif hist_set_method == "all":
+            self.active_hist_sets = {}
+            for intermediary in self.instance.intermediaries:
+                instance_farmers = frozenset([
+                    f.id for f in self.instance.farmers
+                    if f.intermediary_id == intermediary.id
+                ])
+                hist_farmers = frozenset()
+                for hist_set in self._original_hist_sets[intermediary.id]:
+                    hist_farmers = hist_farmers.union(hist_set) 
+                all = instance_farmers.union(hist_farmers)
+                self.active_hist_sets[intermediary.id] = (all,)
+        elif hist_set_method == "instance_farmers":
+            self.active_hist_sets = {}
+            for intermediary in self.instance.intermediaries:
+                instance_farmers = frozenset([
+                    f.id for f in self.instance.farmers
+                    if f.intermediary_id == intermediary.id
+                ])
+                self.active_hist_sets[intermediary.id] = (instance_farmers,)
+        elif hist_set_method == "original":
             self.active_hist_sets = {
                 intermediary_id: hist_sets
                 for intermediary_id, hist_sets in self._original_hist_sets.items()
             }
+        else:
+            raise ValueError("allowed hist_set_methods: union, all, instance_farmers, or original.")
 
     def _calc_dominance(self) -> list[tuple[str, str]]:
         """Compute pairwise dominance relations between intermediaries.
@@ -1366,6 +1389,37 @@ class Optimizer:
             self.output.metric(str(n_trucks), routing_cost_by_truck_count[n_trucks])
 
         return routing_cost_by_truck_count
+
+    def _ensure_routing_costs_up_to(self, n_trucks: int) -> None:
+        """Make sure routing_cost_by_truck_count has an entry for every
+        truck count up to n_trucks (capped at n_intermediaries), computing
+        and caching any missing values on demand.
+        """
+        n_trucks = min(n_trucks, self.n_intermediaries)
+        current_max = max(self.routing_cost_by_truck_count)
+
+        if n_trucks <= current_max:
+            return
+
+        for k in range(current_max + 1, n_trucks + 1):
+            if self.params.vrp_mode == "exact":
+                matching = self.vrp_solver.solve(
+                    n_vehicles_lower_bound=k,
+                    n_vehicles_upper_bound=k,
+                    threads=self.params.threads,
+                    time_limit_seconds=self.params.vrp_time_limit_seconds,
+                )
+                cost = matching.cost
+            elif self.params.vrp_mode == "approximate":
+                base_n, base_cost = next(iter(self.routing_cost_by_truck_count.items()))
+                cost = base_cost + (k - base_n) * self.instance.truck_fixed_cost
+            else:
+                raise ValueError("VRP Mode Not Recognized")
+
+            self.routing_cost_by_truck_count[k] = cost
+            self.output.metric(f"Lazily computed routing cost for {k} trucks", cost)
+
+        self.max_trucks = max(self.max_trucks, n_trucks)
 
     def _initialize_intermediary_set_to_cost(self) -> dict[frozenset[str], float]:
         """Initialize the catalogue of all explored intermediary selections.

@@ -174,6 +174,61 @@ class PrizeMatrix:
         self.best_prizes[merged_idx] = merged_prizes
         self.farmer_used[merged_idx] = merged_farmers
 
+    def merge2(self, child_idx: int, parent_idx: int, merged_idx: int, cost: float) -> None:
+        """
+        Combines two nodes in-place during recursive DP computation.
+
+        Args:
+            child_idx (int): index of child node.
+            parent_idx (int): index of parent node.
+            merged_idx (int): index of resulting merged node.
+            cost (float): merge cost, generally the round-trip cost from child to parent.
+
+        Returns:
+            None
+        """
+        child_prizes = self.best_prizes[child_idx]
+        parent_prizes = self.best_prizes[parent_idx]
+
+        # feasibility masking
+        child_feasible = np.zeros(self.q_max + 1, dtype=bool)
+        child_feasible[0] = True
+        child_feasible[1:] = child_prizes[1:] > -np.inf
+        parent_feasible = np.zeros(self.q_max + 1, dtype=bool)
+        parent_feasible[0] = True
+        parent_feasible[1:] = parent_prizes[1:] > -np.inf
+
+        # effective_cost applies only for quantity > 0
+        child_adj = child_prizes.copy()
+        child_adj[1:] -= cost
+        child_adj[~child_feasible] = -np.inf
+
+        parent_adj = parent_prizes.copy()
+        parent_adj[~parent_feasible] = -np.inf
+
+        merged_prizes = np.full(self.q_max + 1, -np.inf)
+        merged_prizes[0] = 0
+        merged_farmers = np.zeros((self.q_max + 1, self.n_farmers), dtype=bool)
+
+        for merged_quantity in range(self.q_max + 1):
+            child_quantities = np.arange(merged_quantity + 1)
+            parent_quantities = merged_quantity - child_quantities 
+            candidate_values = child_adj[child_quantities] + parent_adj[parent_quantities]
+
+            best_local_idx = np.argmax(candidate_values)
+            best_value = candidate_values[best_local_idx]
+
+            if best_value > merged_prizes[merged_quantity]:
+                merged_prizes[merged_quantity] = best_value
+                merged_farmers[merged_quantity] = (
+                    self.farmer_used[child_idx, child_quantities[best_local_idx]]
+                    | self.farmer_used[parent_idx, parent_quantities[best_local_idx]]
+                )
+
+        # update relevant matrices with merged values
+        self.best_prizes[merged_idx] = merged_prizes
+        self.farmer_used[merged_idx] = merged_farmers
+
     def solve(
         self, prizes_by_farmer_idx: list[float], threshold: float
     ) -> tuple[list[float], list[npt.NDArray[np.intp]]]:
@@ -207,7 +262,14 @@ class PrizeMatrix:
         for child_idx in self.ordering:
             if child_idx != self.root_node_idx:
                 parent_idx = self.parent_idx_by_child_idx[child_idx]
-                self.merge(
+                # self.merge(
+                #     child_idx=child_idx,
+                #     parent_idx=parent_idx,
+                #     merged_idx=parent_idx,
+                #     cost=self.edge_costs[child_idx, parent_idx]
+                #     + self.edge_costs[parent_idx, child_idx],
+                # )
+                self.merge2(
                     child_idx=child_idx,
                     parent_idx=parent_idx,
                     merged_idx=parent_idx,

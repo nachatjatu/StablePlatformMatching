@@ -1,344 +1,106 @@
 from __future__ import annotations
 
-import pickle
 import platform
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
-import copy
 
 import numpy as np
-import os
-import json
-import gzip
-import math
 
-from stable_platform_matchings import Optimizer
+from stable_platform_matchings import Optimizer, InstanceGenerator
 from stable_platform_matchings.optimization.options import OptimizerParams, SolverOptions
-from stable_platform_matchings.domain.instance import Instance
-from stable_platform_matchings.graphs.road_graphs import RoadGraph
+import stable_platform_matchings.experiments.utils as utils
 
-
-N_RUNS = 10
 BASE_SEED = 20260806
+VRP_TIME_LIMIT_SECONDS = 900
+DATA_DIR = Path("data")
 
-MIN_QUANTITY = 0.1
-MAX_QUANTITY = 9.0
-MAX_PERTURB = 0.5
+FARMERS_FULL_CSV_PATH = DATA_DIR / Path("farmers.csv")
+FARMERS_14_CSV_PATH = DATA_DIR / Path("farmers_14.csv")
+INTERMEDIARIES_CSV_PATH = DATA_DIR / Path("intermediaries.csv")
+GRAPH_PKL_PATH = DATA_DIR / Path("graph_0-14960_00_new.pickle")
+ALPHA_JSON_PATH = DATA_DIR / Path("precomputed_alpha.json")
+SIGMAS_JSON_PATH = DATA_DIR / Path("precomputed_sigmas.json")
 
-MIN_EPSILON = 0.0
-MAX_EPSILON = 6.0
-
-HET_COST_MEAN = 0.0
-HET_COST_SD = 100_000.0
-
-VRP_TIME_LIMIT_SECONDS = 1800
-
-def encode_nonfinite(value: Any) -> Any:
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "NaN"
-        if value == math.inf:
-            return "Infinity"
-        if value == -math.inf:
-            return "-Infinity"
-        return value
-
-    if isinstance(value, dict):
-        return {
-            str(key): encode_nonfinite(item)
-            for key, item in value.items()
-        }
-
-    if isinstance(value, (list, tuple)):
-        return [encode_nonfinite(item) for item in value]
-
-    if isinstance(value, (set, frozenset)):
-        return [
-            encode_nonfinite(item)
-            for item in sorted(value)
-        ]
-
-    return value
-
-def find_nonfinite(
-    value: Any,
-    path: str = "payload",
-) -> list[tuple[str, Any]]:
-    found: list[tuple[str, Any]] = []
-
-    if isinstance(value, (float, np.floating)):
-        numeric_value = float(value)
-        if not math.isfinite(numeric_value):
-            found.append((path, value))
-        return found
-
-    if isinstance(value, dict):
-        for key, item in value.items():
-            found.extend(
-                find_nonfinite(
-                    item,
-                    f"{path}[{key!r}]",
-                )
-            )
-        return found
-
-    if isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            found.extend(
-                find_nonfinite(
-                    item,
-                    f"{path}[{index}]",
-                )
-            )
-        return found
-
-    if isinstance(value, (set, frozenset)):
-        for index, item in enumerate(value):
-            found.extend(
-                find_nonfinite(
-                    item,
-                    f"{path}[set_item_{index}]",
-                )
-            )
-
-    return found
-
-def json_default(value: Any) -> Any:
-    """Convert supported non-standard values into JSON-compatible data."""
-    if isinstance(value, np.integer):
-        return int(value)
-
-    if isinstance(value, np.floating):
-        return float(value)
-
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-
-    if isinstance(value, (set, frozenset)):
-        return sorted(value)
-
-    if isinstance(value, Path):
-        return str(value)
-
-    if isinstance(value, tuple):
-        return list(value)
-
-    raise TypeError(
-        f"Object of type {type(value).__name__} "
-        "is not JSON serializable"
-    )
-
-def save_json_gz_atomic(
-    payload: dict[str, Any],
-    save_path: Path,
-) -> None:
-    """
-    Atomically write a gzip-compressed JSON checkpoint.
-
-    Existing files are replaced only after the new file has been written
-    successfully.
-    """
-    if not save_path.name.endswith(".json.gz"):
-        raise ValueError("save_path must end with .json.gz")
-
-    temporary_path = save_path.with_name(
-        save_path.name + ".tmp"
-    )
-
-    try:
-        with gzip.open(
-            temporary_path,
-            "wt",
-            encoding="utf-8",
-            compresslevel=6,
-        ) as file:
-            json.dump(
-                payload,
-                file,
-                default=json_default,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-            )
-
-        temporary_path.replace(save_path)
-
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
-
-
-def get_solver_threads() -> int:
-    for var in ("SLURM_CPUS_PER_TASK", "GUROBI_THREADS"):
-        value = os.environ.get(var)
-        if value:
-            try:
-                return max(1, int(value))
-            except ValueError:
-                pass
-    return 1
-
-
-def package_version(package: str) -> str | None:
-    """Return an installed package's version, if available."""
-    try:
-        return version(package)
-    except PackageNotFoundError:
-        return None
-
-
-def sample_quantities(
-    instance: Instance,
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    """Perturb, round down, and clip each farmer's quantity."""
-    quantities = {}
-
-    for farmer in instance.farmers:
-        perturbation = rng.uniform(-MAX_PERTURB, MAX_PERTURB)
-        perturbed = farmer.quantity + perturbation
-        rounded_down = np.floor(perturbed * 10.0) / 10.0
-        clipped = np.clip(
-            rounded_down,
-            MIN_QUANTITY,
-            MAX_QUANTITY,
-        )
-
-        quantities[farmer.id] = float(clipped)
-
-    return quantities
-
-
-def sample_epsilons(
-    instance: Instance,
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    """Sample an epsilon for every intermediary."""
-    return {
-        intermediary.id: float(
-            rng.uniform(MIN_EPSILON, MAX_EPSILON)
-        )
-        for intermediary in instance.intermediaries
-    }
-
-
-def sample_het_costs(
-    instance: Instance,
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    """Sample heterogeneous costs for every intermediary."""
-    return {
-        intermediary.id: float(
-            4.0 * instance.dist_to_mill[intermediary.id]
-            + rng.normal(HET_COST_MEAN, HET_COST_SD)
-        )
-        for intermediary in instance.intermediaries
-    }
-
+EPSILON = 2
+N_HIST_SETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+N_CYCLES = 11
+N_INTS = 12
+CYCLE_LENGTH = 14
 
 def run_one(
     *,
     job_id: int,
-    run_index: int,
-    instance_paths: list[Path],
-    graph: Any,
-    solver_threads: int
+    generator: InstanceGenerator,
+    n_hist_sets: int,
+    solver_threads: int,
+    epsilon: float,
+    hist_set_method: str
 ) -> dict[str, Any]:
-    """
-    Run one reproducible experiment and return the InstanceSummary together
-    with the information required to reproduce the sampled inputs.
-    """
-    seed_sequence = np.random.SeedSequence(
-        [BASE_SEED, job_id, run_index]
-    )
 
+    # set random seeding
+    print("Setting random seeding...")
+    seed_sequence = np.random.SeedSequence(
+        [BASE_SEED, job_id, n_hist_sets]
+    )
     sampling_seed_sequence, optimizer_seed_sequence = (
         seed_sequence.spawn(2)
     )
-
-    rng = np.random.default_rng(sampling_seed_sequence)
-
     optimizer_seed = int(
-        optimizer_seed_sequence.generate_state(
-            1,
-            dtype=np.uint32,
-        )[0]
+        optimizer_seed_sequence.generate_state(1, dtype=np.uint32)[0]
     )
 
-    instance_index = int(rng.integers(len(instance_paths)))
-    instance_path = instance_paths[instance_index]
-
-    initial_instance = Instance.from_yaml(instance_path)
-
-    quantities = sample_quantities(
-        instance=initial_instance,
-        rng=rng,
+    # load instance generator
+    print("Generating instance...")
+    instance = generator.gen_instance(
+        instance_id=str(job_id),
+        day=N_CYCLES * CYCLE_LENGTH - 1,
+        n_hist_sets=n_hist_sets,
     )
 
-    instance = Instance.from_yaml(
-        instance_path,
-        force_quantities=quantities,
-    )
+    # sample inputs
+    print("Sampling inputs...")
+    epsilons = {
+        intermediary.id: float(epsilon)
+        for intermediary in instance.intermediaries
+    }
+    het_costs = {
+        intermediary.id: float(2.0 * instance.dist_to_mill[intermediary.id])
+        for intermediary in instance.intermediaries
+    }
 
-    instance.set_graph(RoadGraph(graph))
-
-    epsilons = sample_epsilons(
-        instance=instance,
-        rng=rng,
-    )
-
-    het_costs = sample_het_costs(
-        instance=instance,
-        rng=rng,
-    )
-
+    # initialize optimizer
+    print("Initializing optimizer...")
     params = OptimizerParams(
         het_costs=het_costs,
         epsilons=epsilons,
         backend="gurobi",
         vrp_mode="approximate",
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
-        threads=solver_threads
+        threads=solver_threads,
     )
-
-    options_no_pay = SolverOptions(
-        strategy="heuristic_optimized",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop=False,
-        aggregate=True,
-        pay_unmatched=False,
-        seed=optimizer_seed
-    )
-
-    options_pay = SolverOptions(
-        strategy="heuristic_optimized",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop=False,
-        aggregate=True,
-        pay_unmatched=True,
-        seed=optimizer_seed
-    )
-
-
     optimizer = Optimizer(
         instance=instance,
         params=params,
     )
 
-    optimizer_no_pay = copy.deepcopy(optimizer)
-    optimizer_pay = copy.deepcopy(optimizer)
-
-    summary_no_pay = optimizer_no_pay.solve(options_no_pay)
-    summary_pay = optimizer_pay.solve(options_pay)
+    # solve
+    print("Solving...")
+    options = SolverOptions(
+        strategy="heuristic_optimized",
+        structured_farmer_payments=False,
+        dominance_constraints=False,
+        early_stop=False,
+        hist_set_method=hist_set_method,
+        pay_unmatched=False,
+        seed=optimizer_seed,
+    )
+    summary = optimizer.solve(options)
 
     return {
         "schema_version": 1,
         "metadata": {
-            "run_index": run_index,
+            "n_hist_sets": n_hist_sets,
             "optimizer_seed": optimizer_seed,
             "seed_sequence_state": seed_sequence.state,
             "sampling_seed_sequence_state": (
@@ -347,52 +109,56 @@ def run_one(
             "optimizer_seed_sequence_state": (
                 optimizer_seed_sequence.state
             ),
-            "instance_file": instance_path.name,
-            "instance_index": instance_index,
+            "hist_set_method": hist_set_method
         },
         "sampled_inputs": {
-            "quantities": quantities,
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary_no_pay": summary_no_pay.return_dict(),
-        "summary_pay": summary_pay.return_dict()
+        "summary": summary.return_dict(),
     }
+
 
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python experiment.py JOB_ID")
-    
+
     job_id = int(sys.argv[1])
 
-    data_path = Path("data")
-    instances_path = data_path / "anon_14_day_instances"
-    graph_path = data_path / "graph_0-14960_00_new.pickle"
-
+    # get data paths
     results_path = Path("results") / "exp_3" / f"job_{job_id}"
-
-    if not instances_path.is_dir():
-        raise FileNotFoundError(f"Instance directory does not exist: {instances_path}")
-
-    if not graph_path.is_file():
-        raise FileNotFoundError(f"Graph file does not exist: {graph_path}")
-
     results_path.mkdir(parents=True, exist_ok=True)
 
-    instance_paths = sorted(
-        path for path in instances_path.iterdir()
-        if path.is_file()
-        and path.suffix.lower() in {".yaml", ".yml"}
-        and not path.name.startswith("aggregate")
+    # set seeds
+    job_seed_sequence = np.random.SeedSequence([BASE_SEED, job_id])
+    intermediary_seed_sequence, calendar_seed_sequence, epsilon_seed_sequence = job_seed_sequence.spawn(3)
+    intermediary_seed = int(
+        intermediary_seed_sequence.generate_state(1, dtype=np.uint32)[0]
+    )
+    calendar_seed = int(
+        calendar_seed_sequence.generate_state(1, dtype=np.uint32)[0]
     )
 
-    if not instance_paths:
-        raise FileNotFoundError(f"No YAML instance files found in {instances_path}")
+    print("Loading instance generator...")
+    generator = InstanceGenerator(
+        farmers_full_csv_path=FARMERS_FULL_CSV_PATH,
+        farmers_14_csv_path=FARMERS_14_CSV_PATH,
+        intermediaries_csv_path=INTERMEDIARIES_CSV_PATH,
+        graph_pkl_path=GRAPH_PKL_PATH,
+        alpha_json_path=ALPHA_JSON_PATH,
+        sigmas_json_path=SIGMAS_JSON_PATH,
+    )
+    generator.gen_intermediaries(
+        n_intermediaries=N_INTS,
+        seed=intermediary_seed,
+    )
+    generator.gen_calendar(
+        n_cycles=N_CYCLES,
+        cycle_length=CYCLE_LENGTH,
+        seed=calendar_seed,
+    )
 
-    with graph_path.open("rb") as file:
-        graph = pickle.load(file)
-
-    solver_threads = get_solver_threads()
+    solver_threads = utils.get_solver_threads()
 
     experiment_metadata = {
         "experiment": "exp_3",
@@ -400,22 +166,23 @@ def main() -> None:
         "job_id": job_id,
         "python_version": platform.python_version(),
         "numpy_version": np.__version__,
-        "stable_platform_matchings_version": package_version(
+        "stable_platform_matchings_version": utils.package_version(
             "stable-platform-matchings"
         ),
-        "gurobipy_version": package_version("gurobipy"),
+        "gurobipy_version": utils.package_version("gurobipy"),
         "solver_threads": solver_threads,
+        "sampled_inputs": {
+            "epsilon": EPSILON,
+            "intermediary_seed": intermediary_seed,
+            "calendar_seed": calendar_seed,
+        },
         "constants": {
-            "min_quantity": MIN_QUANTITY,
-            "max_quantity": MAX_QUANTITY,
-            "max_perturb": MAX_PERTURB,
-            "min_epsilon": MIN_EPSILON,
-            "max_epsilon": MAX_EPSILON,
-            "het_cost_mean": HET_COST_MEAN,
-            "het_cost_sd": HET_COST_SD,
-            "vrp_time_limit_seconds": (
-                VRP_TIME_LIMIT_SECONDS
-            ),
+            "vrp_time_limit_seconds": VRP_TIME_LIMIT_SECONDS,
+            "epsilon": EPSILON,
+            "n_hist_sets_values": N_HIST_SETS,
+            "n_cycles": N_CYCLES,
+            "n_intermediaries": N_INTS,
+            "cycle_length": CYCLE_LENGTH,
         },
     }
 
@@ -425,23 +192,23 @@ def main() -> None:
         "schema_version": 1,
         "job_id": job_id,
         "experiment_metadata": experiment_metadata,
-        "n_runs": 0,
-        "runs": [],
+        "hist_sets_counts": 0,
+        "n_hist_sets": [],
     }
 
-    for run_index in range(N_RUNS):
+    for n_hist_sets in N_HIST_SETS:
         run_payload = run_one(
             job_id=job_id,
-            run_index=run_index,
-            instance_paths=instance_paths,
-            graph=graph,
-            solver_threads=solver_threads
+            generator=generator,
+            n_hist_sets=n_hist_sets,
+            solver_threads=solver_threads,
+            epsilon=EPSILON,
+            hist_set_method="original"
         )
 
-        safe_run_payload = encode_nonfinite(run_payload)
-
-        nonfinite_values = find_nonfinite(safe_run_payload)
-
+        # format results for correctness
+        safe_run_payload = utils.encode_nonfinite(run_payload)
+        nonfinite_values = utils.find_nonfinite(safe_run_payload)
         if nonfinite_values:
             print("Found non-finite values:")
             for path, value in nonfinite_values:
@@ -451,19 +218,55 @@ def main() -> None:
                 f"Payload contains {len(nonfinite_values)} non-finite value(s)"
             )
 
-        job_payload["runs"].append(safe_run_payload)
-        job_payload["n_runs"] = len(job_payload["runs"])
-
-        save_json_gz_atomic(
+        # add results to the job payload and save
+        job_payload["n_hist_sets"].append(safe_run_payload)
+        job_payload["hist_sets_counts"] = len(job_payload["n_hist_sets"])
+        utils.save_json_gz_atomic(
             payload=job_payload,
             save_path=save_path,
         )
 
         print(
-            f"Saved run {run_index} "
-            f"({job_payload['n_runs']}/{N_RUNS}) "
+            f"Saved n_hist_sets {n_hist_sets} "
+            f"({job_payload['hist_sets_counts']}/{len(N_HIST_SETS) + 1}) "
             f"to {save_path}"
         )
+
+    max_n_hist_sets = max(N_HIST_SETS)
+    run_payload = run_one(
+        job_id=job_id,
+        generator=generator,
+        n_hist_sets=max_n_hist_sets,
+        solver_threads=solver_threads,
+        epsilon=EPSILON,
+        hist_set_method="union"
+    )
+    
+    # format results for correctness
+    safe_run_payload = utils.encode_nonfinite(run_payload)
+    nonfinite_values = utils.find_nonfinite(safe_run_payload)
+    if nonfinite_values:
+        print("Found non-finite values:")
+        for path, value in nonfinite_values:
+            print(f"  {path} = {value!r}")
+
+        raise ValueError(
+            f"Payload contains {len(nonfinite_values)} non-finite value(s)"
+        )
+
+    # add results to the job payload and save
+    job_payload["n_hist_sets"].append(safe_run_payload)
+    job_payload["hist_sets_counts"] = len(job_payload["n_hist_sets"])
+    utils.save_json_gz_atomic(
+        payload=job_payload,
+        save_path=save_path,
+    )
+
+    print(
+        f"Saved n_hist_sets {max_n_hist_sets} "
+        f"({job_payload['hist_sets_counts']}/{len(N_HIST_SETS) + 1}) "
+        f"to {save_path}"
+    )
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=exp_5
-#SBATCH --array=0-195%40
-#SBATCH --time=02:00:00
+#SBATCH --job-name=exp_4_heuristic
+#SBATCH --array=0-195%20
+#SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
-#SBATCH --output=logs/exp_5/out/%x_%A_%a.out
-#SBATCH --error=logs/exp_5/err/%x_%A_%a.err
+#SBATCH --output=logs/exp_4_heuristic/out/%x_%A_%a.out
+#SBATCH --error=logs/exp_4_heuristic/err/%x_%A_%a.err
 
 source .venv/bin/activate
 
@@ -35,4 +35,4 @@ export GUROBI_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run experiment for this array index
-python3 experiments/exp_5/exp_5.py $SLURM_ARRAY_TASK_ID
+python3 experiments/exp_4/exp_4_heuristic.py $SLURM_ARRAY_TASK_ID

@@ -5,7 +5,6 @@ import platform
 import sys
 from pathlib import Path
 from typing import Any
-import copy
 
 import numpy as np
 
@@ -15,20 +14,18 @@ from stable_platform_matchings.domain.instance import Instance
 from stable_platform_matchings.graphs.road_graphs import RoadGraph
 import stable_platform_matchings.experiments.utils as utils
 
-
-N_RUNS = 10
+N_RUNS = 1
 BASE_SEED = 20260806
-MIN_QUANTITY = 0.1
-MAX_QUANTITY = 9.0
-MAX_PERTURB = 0.5
-MIN_EPSILON = 0.0
-MAX_EPSILON = 6.0
-HET_COST_MEAN = 0.0
-HET_COST_SD = 100_000.0
+MIN_QUANTITY = 0.5
+MAX_QUANTITY = 2.8
+MIN_HET_COST = 200_000.0
+MAX_HET_COST = 1_200_000.0
+HIGH_PROB = 0.28
 VRP_TIME_LIMIT_SECONDS = 900
+EPSILON = 2
+FRUIT_THRESH = 3.5
 
-
-def perturb_quantities(
+def sample_quantities(
     instance: Instance,
     rng: np.random.Generator,
 ) -> dict[str, float]:
@@ -36,9 +33,8 @@ def perturb_quantities(
     quantities = {}
 
     for farmer in instance.farmers:
-        perturbation = rng.uniform(-MAX_PERTURB, MAX_PERTURB)
-        perturbed = farmer.quantity + perturbation
-        rounded_down = np.floor(perturbed * 10.0) / 10.0
+        random_quantity = rng.uniform(MIN_QUANTITY, MAX_QUANTITY)
+        rounded_down = np.floor(random_quantity * 10.0) / 10.0
         clipped = np.clip(
             rounded_down,
             MIN_QUANTITY,
@@ -50,51 +46,103 @@ def perturb_quantities(
     return quantities
 
 
-def sample_epsilons(
-    instance: Instance,
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    """Sample an epsilon for every intermediary."""
-    return {
-        intermediary.id: float(
-            rng.uniform(MIN_EPSILON, MAX_EPSILON)
-        )
-        for intermediary in instance.intermediaries
-    }
 
-
-def perturb_het_costs(
+def sample_het_costs(
     instance: Instance,
     rng: np.random.Generator,
 ) -> dict[str, float]:
     """Sample heterogeneous costs for every intermediary."""
     return {
         intermediary.id: float(
-            4.0 * instance.dist_to_mill[intermediary.id]
-            + rng.normal(HET_COST_MEAN, HET_COST_SD)
+            rng.uniform(MIN_HET_COST, MAX_HET_COST)
         )
         for intermediary in instance.intermediaries
     }
+
+def set_relationships(
+    instance: Instance,
+    rng: np.random.Generator
+):
+    hist_matching = {
+        intermediary.id: set() 
+        for intermediary in instance.intermediaries
+    }
+    farmer_quants = {
+        farmer.id: farmer.quantity 
+        for farmer in instance.farmers
+    }
+    unmatched_farmers = set(farmer_quants.keys())
+
+    high_int = {
+        intermediary.id for intermediary in instance.intermediaries 
+        if rng.random() < HIGH_PROB
+    }
+    low_int = {
+        intermediary.id for intermediary in instance.intermediaries 
+        if intermediary.id not in high_int
+    }
+
+    intermediary_ids = [intermediary.id for intermediary in instance.intermediaries]
+
+    while len(unmatched_farmers) > 0:
+        sampled_farmer = str(rng.choice(sorted(unmatched_farmers)))
+        sampled_int = str(rng.choice(sorted(intermediary_ids)))
+        
+        sum_fruit = sum(
+            farmer_quants[f_id] for f_id in hist_matching[sampled_int]
+        ) + farmer_quants[sampled_farmer]
+
+        if (sampled_int in high_int) or (sampled_int in low_int and sum_fruit <= FRUIT_THRESH):
+            hist_matching[sampled_int].add(sampled_farmer)
+            unmatched_farmers.remove(sampled_farmer)
+
+
+    for intermediary in instance.intermediaries:
+        intermediary.hist_sets = [frozenset(hist_matching[intermediary.id])]
+
+    return hist_matching
+
+
+def sample_locs(
+    instance: Instance,
+    rng: np.random.Generator,
+    G
+):  
+    avail_locations = {
+        str(node):(data['lat'], data['lon']) 
+        for node, data in G.nodes(data=True) 
+        if 'lat' in data and 'lon' in data
+    }
+    farmer_locations = {}
+    for farmer in instance.farmers:
+        node = rng.choice(list(avail_locations.keys()))
+        farmer_locations[farmer.id] = node
+        farmer.location = avail_locations[node]
 
 
 def run_one(
     *,
     job_id: int,
-    run_index: int,
-    instance_paths: list[Path],
+    instance_path: Path,
     graph: Any,
-    solver_threads: int
+    solver_threads: int,
 ) -> dict[str, Any]:
+    """
+    Run one reproducible experiment and return the InstanceSummary together
+    with the information required to reproduce the sampled inputs.
+    """
 
-    # set random seeding
-    print("Setting random seeding...")
+    print("Building instance...")
     seed_sequence = np.random.SeedSequence(
-        [BASE_SEED, job_id, run_index]
+        [BASE_SEED, job_id]
     )
+
     sampling_seed_sequence, optimizer_seed_sequence = (
         seed_sequence.spawn(2)
     )
+
     rng = np.random.default_rng(sampling_seed_sequence)
+
     optimizer_seed = int(
         optimizer_seed_sequence.generate_state(
             1,
@@ -102,35 +150,37 @@ def run_one(
         )[0]
     )
 
-    # load instance and perturb quantities
-    print("Loading instance...")
-    instance_index = int(rng.integers(len(instance_paths)))
-    instance_path = instance_paths[instance_index]
     initial_instance = Instance.from_yaml(instance_path)
-    quantities = perturb_quantities(
+
+    quantities = sample_quantities(
         instance=initial_instance,
         rng=rng,
     )
+    print("Loading instance...")
     instance = Instance.from_yaml(
         instance_path,
         force_quantities=quantities,
     )
-    print(f"Loaded instance {instance_path}, setting graph...")
+
+    print("Sampling locations...")
+    sample_locs(instance, rng, graph)
+
+    print("Setting graph...")
     instance.set_graph(RoadGraph(graph))
 
-    # sample inputs
-    print("Sampling inputs...")
-    epsilons = sample_epsilons(
-        instance=instance,
-        rng=rng,
-    )
-    het_costs = perturb_het_costs(
+    print("Setting relationships...")
+    set_relationships(instance, rng)
+
+    epsilons = {
+        intermediary.id: float(EPSILON)
+        for intermediary in instance.intermediaries
+    }
+
+    het_costs = sample_het_costs(
         instance=instance,
         rng=rng,
     )
 
-    # initialize optimizer
-    print("Initializing optimizer...")
     params = OptimizerParams(
         het_costs=het_costs,
         epsilons=epsilons,
@@ -139,42 +189,29 @@ def run_one(
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
         threads=solver_threads
     )
+
+    print("Initializing optimizer...")
     optimizer = Optimizer(
         instance=instance,
         params=params,
     )
-    optimizer_no_pay = copy.deepcopy(optimizer)
-    optimizer_pay = copy.deepcopy(optimizer)
 
-    # solve
-    print("Solving no pay...")
-    options_no_pay = SolverOptions(
+    options = SolverOptions(
         strategy="heuristic_optimized",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
     )
-    summary_no_pay = optimizer_no_pay.solve(options_no_pay)
 
-    print("Solving pay...")
-    options_pay = SolverOptions(
-        strategy="heuristic_optimized",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop=False,
-        hist_set_method="instance_farmers",
-        pay_unmatched=True,
-        seed=optimizer_seed
-    )
-    summary_pay = optimizer_pay.solve(options_pay)
+    summary_vanilla = optimizer.solve(options)
+
 
     return {
         "schema_version": 1,
         "metadata": {
-            "run_index": run_index,
             "optimizer_seed": optimizer_seed,
             "seed_sequence_state": seed_sequence.state,
             "sampling_seed_sequence_state": (
@@ -184,18 +221,17 @@ def run_one(
                 optimizer_seed_sequence.state
             ),
             "instance_file": instance_path.name,
-            "instance_index": instance_index,
         },
         "sampled_inputs": {
             "quantities": quantities,
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary_no_pay": summary_no_pay.return_dict(),
-        "summary_pay": summary_pay.return_dict()
+        "summary_vanilla": summary_vanilla.return_dict(),
     }
 
 def main() -> None:
+
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python experiment.py JOB_ID")
     
@@ -214,16 +250,18 @@ def main() -> None:
 
     # load instance paths
     instance_paths = sorted(
-        path for path in instances_path.iterdir()
+        (path for path in instances_path.iterdir()
         if path.is_file()
         and path.suffix.lower() in {".yaml", ".yml"}
-        and not path.name.startswith("aggregate")
+        and path.name.startswith("aggregate")),
+        key=lambda x: int(x.name.split("_")[2].split(".")[0])
     )
+
     if not instance_paths:
         raise FileNotFoundError(f"No YAML instance files found in {instances_path}")
 
     # make results path
-    results_path = Path("results") / "exp_1" / f"job_{job_id}"
+    results_path = Path("results") / "exp_4_heuristic" / f"job_{job_id}"
     results_path.mkdir(parents=True, exist_ok=True)
 
     with graph_path.open("rb") as file:
@@ -232,7 +270,7 @@ def main() -> None:
     solver_threads = utils.get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_1",
+        "experiment": "exp_4_heuristic",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),
@@ -245,16 +283,15 @@ def main() -> None:
         "constants": {
             "min_quantity": MIN_QUANTITY,
             "max_quantity": MAX_QUANTITY,
-            "max_perturb": MAX_PERTURB,
-            "min_epsilon": MIN_EPSILON,
-            "max_epsilon": MAX_EPSILON,
-            "het_cost_mean": HET_COST_MEAN,
-            "het_cost_sd": HET_COST_SD,
+            "min_het_cost": MIN_HET_COST,
+            "max_het_cost": MAX_HET_COST,
             "vrp_time_limit_seconds": (
                 VRP_TIME_LIMIT_SECONDS
             ),
         },
     }
+
+    instance_path = instance_paths[job_id%14]
 
     save_path = results_path / f"job_{job_id}.json.gz"
 
@@ -266,38 +303,36 @@ def main() -> None:
         "runs": [],
     }
 
-    for run_index in range(N_RUNS):
-        run_payload = run_one(
-            job_id=job_id,
-            run_index=run_index,
-            instance_paths=instance_paths,
-            graph=graph,
-            solver_threads=solver_threads
+    run_payload = run_one(
+        job_id=job_id,
+        instance_path=instance_path,
+        graph=graph,
+        solver_threads=solver_threads
+    )
+
+    # format results for correctness
+    safe_run_payload = utils.encode_nonfinite(run_payload)
+    nonfinite_values = utils.find_nonfinite(safe_run_payload)
+    if nonfinite_values:
+        print("Found non-finite values:")
+        for path, value in nonfinite_values:
+            print(f"  {path} = {value!r}")
+
+        raise ValueError(
+            f"Payload contains {len(nonfinite_values)} non-finite value(s)"
         )
 
-        # format results for correctness
-        safe_run_payload = utils.encode_nonfinite(run_payload)
-        nonfinite_values = utils.find_nonfinite(safe_run_payload)
-        if nonfinite_values:
-            print("Found non-finite values:")
-            for path, value in nonfinite_values:
-                print(f"  {path} = {value!r}")
+    # add results to the job payload and save
+    job_payload["runs"].append(safe_run_payload)
+    job_payload["n_runs"] = len(job_payload["runs"])
+    utils.save_json_gz_atomic(
+        payload=job_payload,
+        save_path=save_path,
+    )
 
-            raise ValueError(
-                f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-            )
-
-        # add results to the job payload and save
-        job_payload["runs"].append(safe_run_payload)
-        job_payload["n_runs"] = len(job_payload["runs"])
-        utils.save_json_gz_atomic(
-            payload=job_payload,
-            save_path=save_path,
-        )
-
-        print(
-            f"Saved run {run_index} ({job_payload['n_runs']}/{N_RUNS}) to {save_path}"
-        )
+    print(
+        f"Saved run to {save_path}"
+    )
 
 
 if __name__ == "__main__":

@@ -9,3 +9,4 @@ __pycache__/
 htmlcov/
 data/
 results/
+exp_4_heuristic/
