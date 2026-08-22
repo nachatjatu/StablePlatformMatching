@@ -105,9 +105,9 @@ class SolverOptions:
     structured_farmer_payments: bool = False
     dominance_constraints: bool = False
     early_stop: bool = False
-    hist_set_method: str = "none"
+    hist_set_method: str = "instance_farmers"
     pay_unmatched: bool = False
-    stabilize_branch_extrema: bool = False
+    stabilize_final_solution: bool = True
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:

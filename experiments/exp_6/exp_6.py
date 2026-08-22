@@ -117,6 +117,7 @@ def run_one(
         hist_set_method=hist_set_method,
         pay_unmatched=False,
         seed=optimizer_seed,
+        stabilize_final_solution=True
     )
 
     # naive

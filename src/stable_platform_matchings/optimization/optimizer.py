@@ -188,47 +188,36 @@ class Optimizer:
         if self.options.strategy == "exact":
             solve_exact(self)
         elif self.options.strategy == "heuristic_unoptimized":
-            solve_heuristic(
-                self, 
-                optimize=False, 
-                stabilize_branch_extrema=self.options.stabilize_branch_extrema
-            )
+            solve_heuristic(self, heuristic_optimized=False)
         else:
-            solve_heuristic(
-                self, 
-                optimize=True, 
-                stabilize_branch_extrema=self.options.stabilize_branch_extrema
-            )
+            solve_heuristic(self, heuristic_optimized=True)
 
         # raise error if optimization fails to find a solution
         if self.best_lb_result is None or self.best_lb_set is None:
             raise RuntimeError("Optimization finished without finding a feasible incumbent.")
 
-        final_set = frozenset(self.best_lb_set)
-
-        final_branch = Branch(
-            forced_match=set(final_set),
-            forced_unmatch=set(self.intermediary_ids) - set(final_set),
-        )
-
-        if not self.initialize_branch(final_branch):
-            raise RuntimeError(
-                "The selected global intermediary set became infeasible "
-                "during final stabilization."
+        if self.options.stabilize_final_solution:
+            final_set = frozenset(self.best_lb_set)
+            final_branch = Branch(
+                forced_match=set(final_set),
+                forced_unmatch=set(self.intermediary_ids) - set(final_set),
             )
+            if not self.initialize_branch(final_branch):
+                raise RuntimeError(
+                    "The selected global intermediary set became infeasible "
+                    "during final stabilization."
+                )
+            final_result = self.solve_primal_for_branch(
+                final_branch,
+                sol_type="exact",
+                compute_farmer_welfare=True,
+                compute_intermediary_welfare=True
+            )
+            # record solution and print details
+            self.best_lb_result = final_result
+            self.best_lb = final_result.platform_profit
 
-        final_result = self.solve_primal_for_branch(
-            final_branch,
-            sol_type="exact",
-            compute_extrema=True,
-            stabilize_extrema=True,
-        )
-
-        # record solution and print details
-        self.best_lb_result = final_result
-        self.best_lb = final_result.platform_profit
-
-        self.record_summary()
+            self.record_summary()
 
         abs_gap = (
             self.best_ub - self.best_lb 
@@ -302,8 +291,8 @@ class Optimizer:
         self, 
         branch: Branch, 
         sol_type: str,
-        compute_extrema: bool,
-        stabilize_extrema: bool
+        compute_intermediary_welfare: bool,
+        compute_farmer_welfare: bool
     ) -> BranchPrimalResult:
         """
         Solve the primal LP under given branch and solution type in-place.
@@ -682,7 +671,7 @@ class Optimizer:
             dirt_distance_penalty=dirt_distance_penalty
         )
 
-        if not compute_extrema:
+        if not compute_intermediary_welfare and not compute_farmer_welfare:
             return BranchPrimalResult(
                 primary_result=primary_result,
                 primary_n_added_rows=primary_rows
@@ -693,57 +682,52 @@ class Optimizer:
             platform_profit_expr >= model.ObjVal - Optimizer.PRIMARY_OBJECTIVE_TOL, "optimality"
         )
 
-        # re-optimize to get max intermediary welfare solution
-        intermediary_welfare = gp.quicksum(
-            intermediary_profit_vars[intermediary_id] for intermediary_id in self.intermediary_ids
-        )
+        if compute_intermediary_welfare:
+            # re-optimize to get max intermediary welfare solution
+            intermediary_welfare = gp.quicksum(
+                intermediary_profit_vars[intermediary_id] for intermediary_id in self.intermediary_ids
+            )
 
-        if stabilize_extrema:
             _, max_intermediary_welfare = optimize_with_separation(
                 intermediary_welfare,
                 "Maximum intermediary-welfare solve",
             )
+
+            # extract solution information and add to solution summary
+            max_intermediary_welfare_platform_profit = platform_profit_expr.getValue()
+            max_intermediary_welfare_result = _extract_result(
+                model=model,
+                platform_profit=max_intermediary_welfare_platform_profit,
+                payment_per_quantity=payment_per_quantity,
+                paved_distance_penalty=paved_distance_penalty,
+                dirt_distance_penalty=dirt_distance_penalty
+            )
         else:
-            model.setObjective(intermediary_welfare, gp.GRB.MAXIMIZE)
-            model.optimize()
-            self._require_solution(model, "Maximum intermediary-welfare solve")
-            max_intermediary_welfare = model.ObjVal
+            max_intermediary_welfare = None
+            max_intermediary_welfare_result = None
 
-        # extract solution information and add to solution summary
-        max_intermediary_welfare_platform_profit = platform_profit_expr.getValue()
-        max_intermediary_welfare_result = _extract_result(
-            model=model,
-            platform_profit=max_intermediary_welfare_platform_profit,
-            payment_per_quantity=payment_per_quantity,
-            paved_distance_penalty=paved_distance_penalty,
-            dirt_distance_penalty=dirt_distance_penalty
-        )
+        if compute_farmer_welfare:
+            # re-optimize to get max farmer welfare solution
+            farmer_welfare = gp.quicksum(
+                farmer_payment_vars[farmer.id] for farmer in self.instance.farmers
+            )
 
-        # re-optimize to get max farmer welfare solution
-        farmer_welfare = gp.quicksum(
-            farmer_payment_vars[farmer.id] for farmer in self.instance.farmers
-        )
-
-        if stabilize_extrema:
             _, max_farmer_welfare = optimize_with_separation(
                 farmer_welfare,
                 "Maximum farmer-welfare solve",
             )
+
+            max_farmer_welfare_platform_profit = platform_profit_expr.getValue()
+            max_farmer_welfare_result = _extract_result(
+                model=model,
+                platform_profit=max_farmer_welfare_platform_profit,
+                payment_per_quantity=payment_per_quantity,
+                paved_distance_penalty=paved_distance_penalty,
+                dirt_distance_penalty=dirt_distance_penalty
+            )
         else:
-            model.setObjective(farmer_welfare, gp.GRB.MAXIMIZE)
-            model.optimize()
-            self._require_solution(model, "Maximum farmer-welfare solve")
-            max_farmer_welfare = model.ObjVal
-
-
-        max_farmer_welfare_platform_profit = platform_profit_expr.getValue()
-        max_farmer_welfare_result = _extract_result(
-            model=model,
-            platform_profit=max_farmer_welfare_platform_profit,
-            payment_per_quantity=payment_per_quantity,
-            paved_distance_penalty=paved_distance_penalty,
-            dirt_distance_penalty=dirt_distance_penalty
-        )
+            max_farmer_welfare = None
+            max_farmer_welfare_result = None
 
         self.output.subsection("Primal Solve Result")
         self.output.metric("Platform profit", platform_profit)

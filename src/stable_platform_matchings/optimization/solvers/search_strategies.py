@@ -7,8 +7,7 @@ from .optimizer_protocol import OptimizerProtocol
 
 def solve_heuristic(
     optimizer: OptimizerProtocol, 
-    optimize: bool,
-    stabilize_branch_extrema: bool
+    heuristic_optimized: bool,
 ) -> None:
     
     root_branch = Branch(set(), set())
@@ -20,8 +19,7 @@ def solve_heuristic(
             branch_solution = solve_branch_heuristic(
                 optimizer=optimizer, 
                 branch=branch, 
-                optimize=optimize, 
-                stabilize_extrema=stabilize_branch_extrema
+                heuristic_optimized=heuristic_optimized, 
             )
             if branch_solution.status in ["stop", "integral", "infeasible"]:
                 continue
@@ -46,11 +44,23 @@ def solve_heuristic(
             break
 
         if optimizer.options.early_stop:
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+            
             optimizer.best_ub = max(
                 branch_solution.upper_bound for branch_solution in active_branches
             )
+            
             optimizer.record_summary()
-            optimizer.output.status("Early stopping requested")
+
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="Early stopping requested",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="=",
+            )
             break
 
         active_branches = [
@@ -155,8 +165,7 @@ def solve_heuristic(
 def solve_branch_heuristic(
     optimizer: OptimizerProtocol, 
     branch: Branch, 
-    optimize: bool, 
-    stabilize_extrema: bool
+    heuristic_optimized: bool, 
 ) -> BranchSolution:
 
     if not optimizer.rng:
@@ -169,8 +178,8 @@ def solve_branch_heuristic(
     forced_lb_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_lower_bound",
-        compute_extrema=True, 
-        stabilize_extrema=stabilize_extrema
+        compute_farmer_welfare=False,
+        compute_intermediary_welfare=False
     )
 
     optimizer.output.subsection("Lower-Bound Candidate")
@@ -210,8 +219,8 @@ def solve_branch_heuristic(
     forced_ub_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_upper_bound",
-        compute_extrema=True,
-        stabilize_extrema=stabilize_extrema
+        compute_farmer_welfare=True,
+        compute_intermediary_welfare=False
     )
 
     optimizer.output.subsection("Upper-Bound Candidate")
@@ -219,7 +228,7 @@ def solve_branch_heuristic(
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
     # heuristic:
-    if len(branch.forced_match) == 0 and len(branch.forced_unmatch) == 0:
+    if not branch.forced_match and not branch.forced_unmatch:
         optimizer.instance_summary.forced_upper_bound = forced_ub_result.platform_profit
 
     # prune branch early if forced upper bound cannot beat existing integer solution
@@ -257,14 +266,15 @@ def solve_branch_heuristic(
     # heuristic: optional optimize flag
     if (
         forced_ub_result.max_farmer_welfare_result is None
-        or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None):
+        or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None
+    ):
         raise RuntimeError("updated_intermediary_profits is None.")
 
     max_farmer_welfare_int_profits = (
         forced_ub_result.max_farmer_welfare_result.intermediary_profits
     )
 
-    if optimize:
+    if heuristic_optimized:
         intermediary_profits = max_farmer_welfare_int_profits
     else:
         intermediary_profits = {
@@ -467,8 +477,8 @@ def solve_branch_exact(
     forced_lb_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_lower_bound",
-        compute_extrema=False,
-        stabilize_extrema=False
+        compute_farmer_welfare=False,
+        compute_intermediary_welfare=False
     )
     forced_lb_platform_profit = forced_lb_result.platform_profit
 
@@ -505,8 +515,8 @@ def solve_branch_exact(
     forced_ub_solution = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_upper_bound",
-        compute_extrema=False,
-        stabilize_extrema=False
+        compute_farmer_welfare=False,
+        compute_intermediary_welfare=False
     )
 
     optimizer.output.subsection("Forced Upper Bound")
@@ -537,8 +547,8 @@ def solve_branch_exact(
         primal_result = optimizer.solve_primal_for_branch(
             branch=branch,
             sol_type="exact",
-            compute_extrema=False,
-            stabilize_extrema=False
+            compute_farmer_welfare=False,
+            compute_intermediary_welfare=False
         )
 
         optimizer.output.metric("Dual objective", dual_result.objective_value)

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=exp_4_exact
-#SBATCH --array=0-195%20
+#SBATCH --array=0-195%40
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4

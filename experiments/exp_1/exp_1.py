@@ -155,7 +155,8 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        stabilize_final_solution=True
     )
     summary_no_pay = optimizer_no_pay.solve(options_no_pay)
 
@@ -167,7 +168,8 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=True,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        stabilize_final_solution=True
     )
     summary_pay = optimizer_pay.solve(options_pay)
 

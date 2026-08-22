@@ -14,7 +14,6 @@ from stable_platform_matchings.domain.instance import Instance
 from stable_platform_matchings.graphs.road_graphs import RoadGraph
 import stable_platform_matchings.experiments.utils as utils
 
-N_RUNS = 1
 BASE_SEED = 20260806
 MIN_QUANTITY = 0.5
 MAX_QUANTITY = 2.8
@@ -67,6 +66,7 @@ def set_relationships(
         intermediary.id: set() 
         for intermediary in instance.intermediaries
     }
+    farmer_to_intermediary = {}
     farmer_quants = {
         farmer.id: farmer.quantity 
         for farmer in instance.farmers
@@ -94,8 +94,12 @@ def set_relationships(
 
         if (sampled_int in high_int) or (sampled_int in low_int and sum_fruit <= FRUIT_THRESH):
             hist_matching[sampled_int].add(sampled_farmer)
+            farmer_to_intermediary[sampled_farmer] = sampled_int
             unmatched_farmers.remove(sampled_farmer)
 
+
+    for farmer in instance.farmers:
+        farmer.intermediary_id = farmer_to_intermediary[farmer.id]
 
     for intermediary in instance.intermediaries:
         intermediary.hist_sets = [frozenset(hist_matching[intermediary.id])]
@@ -204,9 +208,10 @@ def run_one(
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
+        stabilize_final_solution=False
     )
 
-    summary_vanilla = optimizer.solve(options)
+    summary = optimizer.solve(options)
 
 
     return {
@@ -227,7 +232,7 @@ def run_one(
             "epsilons": epsilons,
             "het_costs": het_costs,
         },
-        "summary_vanilla": summary_vanilla.return_dict(),
+        "summary": summary.return_dict(),
     }
 
 def main() -> None:
@@ -299,9 +304,14 @@ def main() -> None:
         "schema_version": 1,
         "job_id": job_id,
         "experiment_metadata": experiment_metadata,
-        "n_runs": 0,
-        "runs": [],
+        "completed": False
     }
+
+    # pre-save
+    utils.save_json_gz_atomic(
+        payload=job_payload,
+        save_path=save_path,
+    )
 
     run_payload = run_one(
         job_id=job_id,
@@ -323,8 +333,8 @@ def main() -> None:
         )
 
     # add results to the job payload and save
-    job_payload["runs"].append(safe_run_payload)
-    job_payload["n_runs"] = len(job_payload["runs"])
+    job_payload["run"] = safe_run_payload
+    job_payload["completed"] = True
     utils.save_json_gz_atomic(
         payload=job_payload,
         save_path=save_path,

@@ -156,7 +156,8 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        stabilize_final_solution=True
     )
     summary_vanilla_no_pay = optimizer_vanilla_no_pay.solve(vanilla_no_pay_options)
 
@@ -168,7 +169,8 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=True,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        stabilize_final_solution=True
     )
     summary_vanilla_pay = optimizer_vanilla_pay.solve(vanilla_pay_options)
 
@@ -180,20 +182,21 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
-        seed=optimizer_seed
+        stabilize_final_solution=True
     )
     summary_structured_no_pay = optimizer_structured_no_pay.solve(structured_no_pay_options)
 
     print("Solving structured pay...")
     structured_pay_options = SolverOptions(
-            strategy="heuristic_optimized",
-            structured_farmer_payments=True,
-            dominance_constraints=False,
-            early_stop=False,
-            hist_set_method="instance_farmers",
-            pay_unmatched=True,
-            seed=optimizer_seed
-        )
+        strategy="heuristic_optimized",
+        structured_farmer_payments=True,
+        dominance_constraints=False,
+        early_stop=False,
+        hist_set_method="instance_farmers",
+        pay_unmatched=True,
+        seed=optimizer_seed,
+        stabilize_final_solution=True
+    )
     summary_structured_pay = optimizer_structured_pay.solve(structured_pay_options)
 
     print("Solving dominance no pay...")
@@ -204,20 +207,22 @@ def run_one(
         early_stop=False,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
-        seed=optimizer_seed
+        seed=optimizer_seed,
+        stabilize_final_solution=True
     )
     summary_dominance_no_pay = optimizer_dominance_no_pay.solve(dominance_no_pay_options)
 
     print("Solving dominance pay...")
     dominance_pay_options = SolverOptions(
-            strategy="heuristic_optimized",
-            structured_farmer_payments=False,
-            dominance_constraints=True,
-            early_stop=False,
-            hist_set_method="instance_farmers",
-            pay_unmatched=True,
-            seed=optimizer_seed
-        )
+        strategy="heuristic_optimized",
+        structured_farmer_payments=False,
+        dominance_constraints=True,
+        early_stop=False,
+        hist_set_method="instance_farmers",
+        pay_unmatched=True,
+        seed=optimizer_seed,
+        stabilize_final_solution=True
+    )
     summary_dominance_pay = optimizer_dominance_pay.solve(dominance_pay_options)
 
     return {
@@ -337,9 +342,6 @@ def main() -> None:
             raise ValueError(
                 f"Payload contains {len(nonfinite_values)} non-finite value(s)"
             )
-
-        job_payload["runs"].append(safe_run_payload)
-        job_payload["n_runs"] = len(job_payload["runs"])
 
         # add results to the job payload and save
         job_payload["runs"].append(safe_run_payload)
