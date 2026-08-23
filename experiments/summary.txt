@@ -1,8 +1,8 @@
 Experiments:
 
-Exp 1: pricing and matching statistics vs. intermediary deviation potential and costs (no pay unmatched)
-Exp 2: welfare vs. epsilon (no pay unmatched)
-Exp 3: pricing and matching statistics vs. intermediary deviation potential and costs (pay unmatched)
-Exp 4: welfare vs. epsilon (pay unmatched)
-Exp 5: how does n_hist_sets affect welfare? 
-Exp 6: solve times (exact vs heuristics)
+Exp 1: pricing and matching statistics vs. intermediary deviation potential and costs (no pay vs pay)
+Exp 2: welfare vs. epsilon (no pay vs pay)
+Exp 3: how does n_hist_sets (with fixed epsilon) affect welfare? 
+Exp 4: solve times (exact vs heuristics)
+Exp 5: how does epsilon (with fixed n_hist_sets) affect welfare?
+Exp 6: how much "profit" are platforms missing out on by not calibrating epsilon?
