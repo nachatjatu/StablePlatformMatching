@@ -32,6 +32,7 @@ class Matching:
 
         Raises:
             ValueError: route is empty.
+            ValueError: route exceeds truck capacity.
             ValueError: duplicate farmers across routes.
             ValueError: not all farmers covered.
         """

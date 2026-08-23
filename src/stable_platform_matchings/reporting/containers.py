@@ -4,9 +4,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
-from ..domain.instance import Instance
-from ..domain.matching import Matching
-
 if TYPE_CHECKING:
     from ..optimization.branch import Branch
     from ..optimization.options import OptimizerParams

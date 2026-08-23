@@ -28,14 +28,17 @@ class GurobiTSPSolver:
 
     def solve(
         self, 
-        prizes, 
+        prizes: dict[str, float], 
         time_limit_seconds: int, 
         threads: int
     ) -> tuple[list[Route], list[float]]:
         """Solve the prize-collecting TSP.
 
         Args:
-            prizes (dict):  prize value associated with each farmer (indexed by farmer id).
+            prizes (dict[str, float]): prize value associated with each farmer, indexed by ID.
+                `prizes[f]` is the prize associated with farmer `f`.
+            time_limit_seconds (int): time limit for Gurobi, in seconds.
+            threads (int): how many threads to use for Gurobi.
 
         Raises:
             RuntimeError: graph tree not initialized.
@@ -54,39 +57,43 @@ class GurobiTSPSolver:
                 f"Prizes length mismatch: {len(prizes)} != {len(self.instance.farmers)}"
             )
 
+        # set Gurobi params
         model = gp.Model("TSP")
         model.setParam("Threads", threads)
         model.setParam("OutputFlag", 0)
         model.setParam("TimeLimit", time_limit_seconds)
 
-        # Add binary variables for each farmer
+        # add binary variables for each farmer (to use or not)
         farmer_ids = [farmer.id for farmer in self.instance.farmers]
         farmer_vars = model.addVars(farmer_ids, vtype=gp.GRB.BINARY, name="visit")
 
-        # Add a continuous variable for the used truck
+        # add a continuous variable for the used truck
         used = model.addVar(vtype=gp.GRB.CONTINUOUS, lb=0.0, name="truck_used")
 
-        # Add continuous variables for each edge in the tree
+        # add continuous variables for each edge in the tree
         edge_vars = model.addVars(
-            self.instance.tree_edges, vtype=gp.GRB.CONTINUOUS, lb=0.0, name="edge"
+            self.instance.tree_edges,  # type: ignore[call-overload]
+            vtype=gp.GRB.CONTINUOUS,
+            lb=0.0,
+            name="edge",
         )
 
-        # Make sure that all edges of a node are transversed
+        # make sure that all edges of a node are transversed
         for farmer in self.instance.farmers:
             for edge in self.instance.root_edges[farmer.id]:
                 model.addConstr(edge_vars[edge] >= farmer_vars[farmer.id])
 
-        # Make sure that if any farmer is picked up, then used is equal to one
+        # make sure that if any farmer is picked up, then used is equal to one
         for farmer in self.instance.farmers:
             model.addConstr(used >= farmer_vars[farmer.id], "farmer_used")
 
-        # Make sure that at least one farmer is picked up
+        # make sure that at least one farmer is picked up
         model.addConstr(
             gp.quicksum(farmer_vars[farmer.id] for farmer in self.instance.farmers) >= 1,
             "at_least_one_pickup",
         )
 
-        # Add capacity constraint
+        # add capacity constraint
         model.addConstr(
             gp.quicksum(
                 farmer_vars[farmer.id] * farmer.quantity for farmer in self.instance.farmers
@@ -95,12 +102,12 @@ class GurobiTSPSolver:
             "capacity",
         )
 
-        # Objective: maximize the total prize collected minus the cost of each edge twice
+        # objective: maximize profit = total prize minus fixed and travel costs
         total_prize = gp.quicksum(
             prizes[farmer.id] * farmer_vars[farmer.id] for farmer in self.instance.farmers
         )
 
-        edge_cost = gp.quicksum(
+        edge_costs = gp.quicksum(
             edge_vars[edge]
             * self.instance.tree[edge[0]][edge[1]]["weight"]
             * self.instance.truck_cost_per_m
@@ -108,7 +115,7 @@ class GurobiTSPSolver:
         )
 
         model.setObjective(
-            total_prize - 2 * edge_cost - used * self.instance.truck_fixed_cost, gp.GRB.MAXIMIZE
+            total_prize - 2 * edge_costs - used * self.instance.truck_fixed_cost, gp.GRB.MAXIMIZE
         )
 
         model.optimize()
@@ -117,18 +124,17 @@ class GurobiTSPSolver:
 
         objective = model.ObjVal
 
-        # Extract the matching
+        # extract the matching
         selected_farmers = [
-            farmer.id
-            for farmer in self.instance.farmers
+            farmer.id for farmer in self.instance.farmers
             if farmer_vars[farmer.id].X > GurobiTSPSolver.SEL_TOL
         ]
         route = self.instance.calculate_tree_path(selected_farmers)
 
-        # Verify that the objectives correspond
+        # verify that the objectives correspond
         total_prize = sum(prizes[farmer_id] for farmer_id in selected_farmers)
         alt_objective = total_prize - route.cost
-        # Check if the objective matches
+        # check if the objective matches
         if abs(objective - alt_objective) > GurobiTSPSolver.OBJ_TOL:
             raise ValueError(f"Objective mismatch: {objective} != {alt_objective}")
 
@@ -190,6 +196,7 @@ class GurobiVRPSolver:
         if self.instance.tree is None:
             raise RuntimeError("graph tree not initialized.")
 
+        # Gurobi params
         model = gp.Model("VRP")
         model.setParam("Threads", threads)
         model.setParam("TimeLimit", time_limit_seconds)
@@ -198,12 +205,12 @@ class GurobiVRPSolver:
         farmer_ids = [farmer.id for farmer in self.instance.farmers]
         intermediary_ids = list(range(n_vehicles_upper_bound))
 
-        # Add binary variables for each truck and each farmer
+        # add binary variables for each truck and each farmer
         matching_vars = model.addVars(
             intermediary_ids, farmer_ids, vtype=gp.GRB.BINARY, name="visit"
         )
 
-        # Add continuous variables for each edge in the tree and each intermediary
+        # add continuous variables for each edge in the tree and each intermediary
         edge_vars = model.addVars(
             intermediary_ids,
             list(range(len(self.instance.tree_edges))),
@@ -214,12 +221,12 @@ class GurobiVRPSolver:
         )
         edge_to_index = {edge: index for index, edge in enumerate(self.instance.tree_edges)}
 
-        # Add continuous variables for each used intermediary
+        # add continuous variables for each used intermediary
         used = model.addVars(
             intermediary_ids, vtype=gp.GRB.CONTINUOUS, lb=0.0, ub=1.0, name="int_used"
         )
 
-        # Make sure that all edges of a node are transversed
+        # make sure that all edges of a node are transversed
         for intermediary_id in intermediary_ids:
             for farmer in self.instance.farmers:
                 for edge in self.instance.root_edges[farmer.id]:
@@ -228,7 +235,7 @@ class GurobiVRPSolver:
                         >= matching_vars[intermediary_id, farmer.id]
                     )
 
-        # Make sure that if a truck picks up a farmer, then it is used
+        # make sure that if a truck picks up a farmer, then it is used
         for intermediary_id in intermediary_ids:
             model.addConstrs(
                 (
@@ -238,7 +245,7 @@ class GurobiVRPSolver:
                 f"used_lower_{intermediary_id}",
             )
 
-        # Make sure that if a truck is used, then it picks up at least one farmer
+        # make sure that if a truck is used, then it picks up at least one farmer
         for intermediary_id in intermediary_ids:
             model.addConstr(
                 gp.quicksum(
@@ -249,14 +256,14 @@ class GurobiVRPSolver:
                 f"used_upper_{intermediary_id}",
             )
 
-        # Make sure that at least n_vehicles_lower_bound trucks are used
+        # make sure that at least n_vehicles_lower_bound trucks are used
         model.addConstr(
             gp.quicksum(used[intermediary_id] for intermediary_id in intermediary_ids)
             >= n_vehicles_lower_bound,
             "num_vehicles",
         )
 
-        # Make sure that each farmer is picked up by exactly one truck
+        # make sure that each farmer is picked up by exactly one truck
         model.addConstrs(
             (
                 gp.quicksum(
@@ -269,7 +276,7 @@ class GurobiVRPSolver:
             "one_truck",
         )
 
-        # Add capacity constraint for each truck
+        # add capacity constraint for each truck
         for intermediary_id in intermediary_ids:
             model.addConstr(
                 gp.quicksum(
@@ -280,13 +287,13 @@ class GurobiVRPSolver:
                 "capacity",
             )
 
-        # Add an ordering of used trucks to break symmetry
+        # add an ordering of used trucks to break symmetry
         for intermediary_id in intermediary_ids[1:]:
             model.addConstr(
                 used[intermediary_id] <= used[intermediary_id - 1], f"order_{intermediary_id}"
             )
 
-        # Objective: minimize the total cost
+        # objective: minimize the total cost
         edge_costs = gp.quicksum(
             2
             * edge_vars[intermediary_id, edge_index]
@@ -309,7 +316,7 @@ class GurobiVRPSolver:
 
         total_cost = model.ObjVal
 
-        # Extract the matching
+        # extract the matching
         routes = []
         for intermediary_id in intermediary_ids:
             selected_farmers = [
@@ -325,7 +332,7 @@ class GurobiVRPSolver:
         matching = Matching(self.instance, routes)
         alt_cost = matching.cost
 
-        # Check if the objective match
+        # check if the objective match
         print("Gap", total_cost, alt_cost)
         if abs(total_cost - alt_cost) > GurobiVRPSolver.OBJ_TOL:
             raise ValueError(f"Objective mismatch: {total_cost} != {alt_cost}")

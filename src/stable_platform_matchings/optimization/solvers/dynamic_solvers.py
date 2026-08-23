@@ -122,7 +122,13 @@ class PrizeMatrix:
             self.best_prizes[node_idx, farmer_quantity] = prizes[farmer_idx]
             self.farmer_used[node_idx, farmer_quantity, farmer_idx] = True
 
-    def merge(self, child_idx: int, parent_idx: int, merged_idx: int, cost: float) -> None:
+    def merge(
+        self, 
+        child_idx: int, 
+        parent_idx: int, 
+        merged_idx: int, 
+        cost: float
+    ) -> None:
         """
         Combines two nodes in-place during recursive DP computation.
 
@@ -174,7 +180,13 @@ class PrizeMatrix:
         self.best_prizes[merged_idx] = merged_prizes
         self.farmer_used[merged_idx] = merged_farmers
 
-    def merge2(self, child_idx: int, parent_idx: int, merged_idx: int, cost: float) -> None:
+    def merge2(
+        self, 
+        child_idx: int, 
+        parent_idx: int, 
+        merged_idx: int, 
+        cost: float
+    ) -> None:
         """
         Combines two nodes in-place during recursive DP computation.
 
@@ -230,7 +242,9 @@ class PrizeMatrix:
         self.farmer_used[merged_idx] = merged_farmers
 
     def solve(
-        self, prizes_by_farmer_idx: list[float], threshold: float
+        self, 
+        prizes_by_farmer_idx: list[float], 
+        threshold: float
     ) -> tuple[list[float], list[npt.NDArray[np.intp]]]:
         """
         Evaluate the prize matrix and return top routes exceeding threshold.
@@ -262,13 +276,6 @@ class PrizeMatrix:
         for child_idx in self.ordering:
             if child_idx != self.root_node_idx:
                 parent_idx = self.parent_idx_by_child_idx[child_idx]
-                # self.merge(
-                #     child_idx=child_idx,
-                #     parent_idx=parent_idx,
-                #     merged_idx=parent_idx,
-                #     cost=self.edge_costs[child_idx, parent_idx]
-                #     + self.edge_costs[parent_idx, child_idx],
-                # )
                 self.merge2(
                     child_idx=child_idx,
                     parent_idx=parent_idx,

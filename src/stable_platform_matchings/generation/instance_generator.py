@@ -58,26 +58,38 @@ class InstanceGenerator:
         self.bbox_m (npt.NDArray[np.float64]): a bounding box of the platform road network.
         self.grid_coords (npt.NDArray[np.float64]): a stacked array of grid coordinates.
 
-        self.intermediary_spatial_kde (gaussian_kde):
-        self.farmer_spatial_kde (gaussian_kde):
-        self.gamma_lookups (dict[str, interp1d]):
+        self.intermediary_spatial_kde (gaussian_kde): Gaussian KDE modeling global intermediary
+            spatial density, fit over `intermediaries_df` coordinates in local CRS.
+        self.farmer_spatial_kde (gaussian_kde): Gaussian KDE modeling global farmer spatial
+            density, fit over `farmers_full_df` coordinates in local CRS.
+        self.gamma_lookups (dict[str, interp1d]): maps each intermediary representative type to
+            an interpolated Gamma-distribution PDF over distance, used when sampling farmer
+            distances from that intermediary.
 
-        self.alpha (float):
-        self.sigmas (dict[str, float]):
+        self.alpha (float): calibrated parameter weighting global farmer spatial density against
+            intermediary distance density when constructing farmer location priors.
+        self.sigmas (dict[str, float]): maps each intermediary representative type to a calibrated
+            sigma value controlling sequential clustering intensity during farmer generation.
 
-        self.p_spatial ()
+        self.p_spatial (npt.NDArray[np.float64]): normalized farmer spatial prior, evaluated
+            over `grid_coords`.
 
-        self.hist_quantities
-        self.hist_n_farmers
-        self.hist_inactive_rates
-        self.hist_offsets
+        self.hist_quantities (dict[str, list[float]]): maps each intermediary representative type
+            to its historical farmer pickup quantities.
+        self.hist_n_farmers (dict[str, list[int]]): maps each intermediary representative type to
+            its historical daily farmer counts.
+        self.hist_inactive_rates (pd.Series): historical per-day fraction of intermediaries that
+            were inactive, derived from `farmers_14_df`.
+        self.hist_offsets (pd.Series): historical day offsets of pickups relative to their nominal
+            periodic cycle.
 
         self.intermediaries (dict[str, dict[str, Any]], optional): a dict mapping intermediary
             IDs to dicts containing their location and type.
-        self.mills = [DEFAULT_MILL]
+        self.mills (list[dict]): list of mill definitions; initialized empty.
 
-        self.pickups_df (pd.DataFrame): a Data
-        self.cycle_length = CYCLE_LENGTH
+        self.calendar_df (pd.DataFrame): a DataFrame containing the generated pickup calendar,
+            populated by `gen_calendar`.
+        self.cycle_length (int): the length of one pickup cycle, in days.
     """
 
     def __init__(
@@ -288,7 +300,10 @@ class InstanceGenerator:
         return locs
 
     def gen_base_schedule(
-        self, cycle_length: int, farmer_rngs: dict[str, np.random.Generator], scale: float
+        self, 
+        cycle_length: int, 
+        farmer_rngs: dict[str, np.random.Generator], 
+        scale: float
     ) -> pd.DataFrame:
         """
         Generates a base pickup schedule of length `cycle_length` days.
@@ -574,7 +589,8 @@ class InstanceGenerator:
         return instance
 
     def _init_graph_and_bbox(
-        self, graph_pkl_path: Path
+        self, 
+        graph_pkl_path: Path
     ) -> tuple[RoadGraph, npt.NDArray[np.float64]]:
         """
         Initializes graph and bounding box data for the instance.
@@ -700,7 +716,10 @@ class InstanceGenerator:
         return hist_offsets[hist_offsets.abs() < 7]
 
     def _compute_log_base_grid_prior(
-        self, intermediary_xy: tuple[float, float], intermediary_type: str, alpha: float
+        self, 
+        intermediary_xy: tuple[float, float], 
+        intermediary_type: str, 
+        alpha: float
     ) -> npt.NDArray[np.float64]:
         """
         Constructs a base farmer location probability density for an intermediary,

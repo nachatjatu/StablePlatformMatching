@@ -38,8 +38,8 @@ class Route:
         self.total_quantity = sum(farmer.quantity for farmer in farmers)
         self.instance = instance
         self.cost = self.calculate_route_tree_cost()
-        self.is_feasible = self.total_quantity <= (
-            self.instance.truck_capacity_tons + Route.CAPACITY_TOL
+        self.is_feasible = (
+            self.total_quantity <= self.instance.truck_capacity_tons + Route.CAPACITY_TOL
         )
         self.value = self.total_quantity * self.instance.fruit_price_per_ton - self.cost
 

@@ -8,6 +8,7 @@ import gzip
 import os
 
 def encode_nonfinite(value: Any) -> Any:
+    """Helper function that helps process nonfinite values for downstream file writing"""
     if isinstance(value, float):
         if math.isnan(value):
             return "NaN"
@@ -18,26 +19,18 @@ def encode_nonfinite(value: Any) -> Any:
         return value
 
     if isinstance(value, dict):
-        return {
-            str(key): encode_nonfinite(item)
-            for key, item in value.items()
-        }
+        return {str(key): encode_nonfinite(item) for key, item in value.items()}
 
     if isinstance(value, (list, tuple)):
         return [encode_nonfinite(item) for item in value]
 
     if isinstance(value, (set, frozenset)):
-        return [
-            encode_nonfinite(item)
-            for item in sorted(value)
-        ]
+        return [encode_nonfinite(item) for item in sorted(value)]
 
     return value
 
-def find_nonfinite(
-    value: Any,
-    path: str = "payload",
-) -> list[tuple[str, Any]]:
+def find_nonfinite(value: Any, path: str = "payload") -> list[tuple[str, Any]]:
+    """Helper function that searches for nonfinite values in an object"""
     found: list[tuple[str, Any]] = []
 
     if isinstance(value, (float, np.floating)):
@@ -78,7 +71,18 @@ def find_nonfinite(
     return found
 
 def json_default(value: Any) -> Any:
-    """Convert supported non-standard values into JSON-compatible data."""
+    """
+    Convert supported non-standard values into JSON-compatible data.
+
+    Args:
+        value (Any): an input object for writing to JSON
+
+    Raises:
+        TypeError: object is not JSON serializable
+
+    Returns:
+        Any: JSON-compatible representation of `value`.
+    """
     if isinstance(value, np.integer):
         return int(value)
 
@@ -97,15 +101,9 @@ def json_default(value: Any) -> Any:
     if isinstance(value, tuple):
         return list(value)
 
-    raise TypeError(
-        f"Object of type {type(value).__name__} "
-        "is not JSON serializable"
-    )
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
-def save_json_gz_atomic(
-    payload: dict[str, Any],
-    save_path: Path,
-) -> None:
+def save_json_gz_atomic(payload: dict[str, Any], save_path: Path) -> None:
     """
     Atomically write a gzip-compressed JSON checkpoint.
 
@@ -143,6 +141,7 @@ def save_json_gz_atomic(
 
 
 def get_solver_threads() -> int:
+    """Gets the number of available solver threads for Gurobi, defaults to 1."""
     for var in ("SLURM_CPUS_PER_TASK", "GUROBI_THREADS"):
         value = os.environ.get(var)
         if value:

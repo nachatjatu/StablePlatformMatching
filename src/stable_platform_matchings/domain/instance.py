@@ -18,7 +18,6 @@ from .route import Route
 GraphNode: TypeAlias = Hashable
 TreeEdge: TypeAlias = tuple[GraphNode, GraphNode]
 
-
 class Instance:
     """
     Platform instance containing farmers, intermediaries, mill, and graph data.
@@ -47,8 +46,8 @@ class Instance:
         dirt_to_mill (dict[str, float]): same as dist_to_mill but using dirt roads.
         paved_to_mill (dict[str, float]): same as dist_to_mill but using paved roads.
 
-        graph (RoadGraph): graph of platform road network.
-        tree (nx.Graph): tree graph derived from platform road network.
+        graph (RoadGraph | None): graph of platform road network.
+        tree (nx.Graph | None): tree graph derived from platform road network.
         tree_order (list[GraphNode]): list containing nodes in tree order.
         tree_edges (list[TreeEdge]): unique edges in the derived tree.
         root_edges (dict[str, list[TreeEdge]]): maps each entity ID to
@@ -63,9 +62,11 @@ class Instance:
             OSMNX graph node ID.
         graph_node_to_entity_ids (dict[GraphNode, list[str]]): maps each OSMNX graph node
             ID to a list of associated entity IDs.
+
+        status_quo_quantities (dict[str, float]): maps intermediary ID to average quantity.
     """
 
-    FRUIT_PRICE_PER_KG = 2513  # local currency (IDR)
+    FRUIT_PRICE_PER_KG = 2513   # local currency (IDR)
     FRUIT_PRICE_PER_TON = FRUIT_PRICE_PER_KG * 1000
 
     TRUCK_CAPACITY_TONS = 9.0  # default value for capacity constraint
@@ -98,15 +99,15 @@ class Instance:
         """
 
         # store metadata
-        self.instance_id = instance_id
-        self.source = None
+        self.instance_id: str = instance_id
+        self.source: str | None = None
 
         # store participant Entities
-        self.farmers = farmers
-        self.intermediaries = intermediaries
-        self.mill = mill
-        self.entities = farmers + intermediaries + [mill]
-        self.mill_key = mill.id
+        self.farmers: list[Farmer] = farmers
+        self.intermediaries: list[Intermediary] = intermediaries
+        self.mill: Mill = mill
+        self.entities: list[Farmer | Intermediary | Mill] = farmers + intermediaries + [mill]
+        self.mill_key: str = mill.id
 
         # validate entity names are unique
         entity_ids = [entity.id for entity in self.entities]
@@ -114,31 +115,43 @@ class Instance:
             raise ValueError("Entity IDs must be unique across the instance.")
 
         # store instance constants
-        self.truck_capacity_tons = Instance.TRUCK_CAPACITY_TONS
-        self.truck_fixed_cost = Instance.TRUCK_FIXED_COST
-        self.truck_cost_per_m = Instance.TRUCK_COST_PER_M
-        self.fruit_price_per_ton = Instance.FRUIT_PRICE_PER_TON
-        self.lc_to_usd = Instance.LC_TO_USD
+        self.truck_capacity_tons: float = Instance.TRUCK_CAPACITY_TONS
+        self.truck_fixed_cost: float = Instance.TRUCK_FIXED_COST
+        self.truck_cost_per_m: float = Instance.TRUCK_COST_PER_M
+        self.fruit_price_per_ton: float = Instance.FRUIT_PRICE_PER_TON
+        self.lc_to_usd: float = Instance.LC_TO_USD
 
         # misc.
-        self.farmer_by_id = {farmer.id: farmer for farmer in farmers}
+        self.farmer_by_id: dict[str, Farmer] = {farmer.id: farmer for farmer in farmers}
 
         # store distances/cost to mill
-        self.dist_to_mill, self.dirt_to_mill, self.paved_to_mill = {}, {}, {}
+        self.dist_to_mill: dict[str, float] = {}
+        self.dirt_to_mill: dict[str, float] = {}
+        self.paved_to_mill: dict[str, float] = {}
 
         # store graph data
-        self.graph, self.tree = None, None
-        self.tree_order, self.tree_edges = [], []
-        self.root_edges = {}
-        self.child_to_parent = {}
-        self.edge_to_idx = {}
-        self.edge_to_root_farmers = {}
-        self.entity_id_to_graph_node, self.graph_node_to_entity_ids = {}, {}
+        self.graph: RoadGraph | None = None
+        self.tree: nx.Graph | None = None
+        self.tree_order: list[GraphNode] = []
+        self.tree_edges: list[TreeEdge] = []
+        self.root_edges: dict[str, list[TreeEdge]] = {}
+        self.child_to_parent: dict[GraphNode, GraphNode] = {}
+        self.edge_to_idx: dict[TreeEdge, int] = {}
+        self.edge_to_root_farmers: dict[TreeEdge, list[Farmer]] = {}
+        self.entity_id_to_graph_node: dict[str, GraphNode] = {}
+        self.graph_node_to_entity_ids: dict[GraphNode, list[str]] = {}
 
-        self.status_quo_quantities = self._calculate_avg_hist_quantities()
+        # store derived quantities
+        self.status_quo_quantities: dict[str, float] = self._calculate_avg_hist_quantities()
 
 
     def to_snapshot(self) -> dict[str, object]:
+        """
+        Returns a dictionary representation of the instance, summarizing key parameters.
+
+        Returns:
+            dict[str, object]: a dictionary representation.
+        """
         def finite_or_none(value: float | None) -> float | None:
             if value is None or not math.isfinite(value):
                 return None
@@ -153,15 +166,9 @@ class Instance:
                     "quantity": farmer.quantity,
                     "location": list(farmer.location),
                     "intermediary_id": farmer.intermediary_id,
-                    "dist_to_mill": finite_or_none(
-                        getattr(farmer, "dist_to_mill", None)
-                    ),
-                    "dirt_to_mill": finite_or_none(
-                        getattr(farmer, "dirt_to_mill", None)
-                    ),
-                    "paved_to_mill": finite_or_none(
-                        getattr(farmer, "paved_to_mill", None)
-                    ),
+                    "dist_to_mill": finite_or_none(getattr(farmer, "dist_to_mill", None)),
+                    "dirt_to_mill": finite_or_none(getattr(farmer, "dirt_to_mill", None)),
+                    "paved_to_mill": finite_or_none(getattr(farmer, "paved_to_mill", None)),
                 }
                 for farmer in self.farmers
             ],
@@ -197,26 +204,25 @@ class Instance:
             },
             "distances": {
                 "total": {
-                    key: finite_or_none(value)
-                    for key, value in self.dist_to_mill.items()
+                    key: finite_or_none(value) for key, value in self.dist_to_mill.items()
                 },
                 "dirt": {
-                    key: finite_or_none(value)
-                    for key, value in self.dirt_to_mill.items()
+                    key: finite_or_none(value) for key, value in self.dirt_to_mill.items()
                 },
                 "paved": {
-                    key: finite_or_none(value)
-                    for key, value in self.paved_to_mill.items()
+                    key: finite_or_none(value) for key, value in self.paved_to_mill.items()
                 },
             },
         }
 
     @classmethod
     def from_dict(
-        cls, instance_dict: dict, force_quantities: dict[str, float] | None = None
+        cls, 
+        instance_dict: dict, 
+        force_quantities: dict[str, float] | None = None
     ) -> Instance:
         """
-        Construct an instance from a dictionary representation.
+        Constructs an instance from a dictionary representation.
 
         Args:
             instance_dict (dict[str, object]): dict representation of instance.
@@ -282,7 +288,9 @@ class Instance:
 
     @classmethod
     def from_yaml(
-        cls, yaml_filepath: Path, force_quantities: dict[str, float] | None = None
+        cls, 
+        yaml_filepath: Path, 
+        force_quantities: dict[str, float] | None = None
     ) -> Instance:
         """Load an instance from a YAML file."""
         with open(yaml_filepath, "r") as file:
@@ -371,7 +379,9 @@ class Instance:
                 self.edge_to_root_farmers[edge].append(farmer)
 
         def _compute_dist_to_mill(
-            entity_node: GraphNode, entity: Entity, weight: str = "weight"
+            entity_node: GraphNode, 
+            entity: Entity, 
+            weight: str = "weight"
         ) -> None:
             """
             Computes distance from entity to mill using various weights

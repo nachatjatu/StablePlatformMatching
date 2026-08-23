@@ -1,5 +1,4 @@
 from collections.abc import Hashable
-from itertools import combinations
 from typing import Any, TypeAlias, cast
 
 import geopandas as gpd
@@ -11,8 +10,18 @@ from shapely.geometry import Point
 
 GraphNode: TypeAlias = Hashable
 
-
 class RoadGraph:
+    """
+    Simplifies road network graph (OSMNX) for use in downstream computations.
+
+    Attributes:
+        mapping_surfaces (dict[str | None, str]): a dictionary that simplifies various
+            road types as either `dirt` or `paved`.
+        graph (nx.MultiDiGraph): the original networkx graph.
+        undirected_graph (nx.Graph): an undirected and connected version of `graph`.
+        subgraph (nx.MultiDiGraph): the road subgraph spanning the given stops, 
+            computed via a minimum-spanning-tree/Steiner-tree approximation. 
+    """
     DIRT_FACTOR = 4
     MAPPING_SURFACES = {
         None: "dirt",  # assume dirt by default
@@ -33,9 +42,10 @@ class RoadGraph:
     LOCAL_CRS = "EPSG:4326"
 
     def __init__(self, graph: nx.MultiDiGraph) -> None:
-        self.mapping_surfaces = RoadGraph.MAPPING_SURFACES
-        self.graph = graph
-        self.undirected_graph = self.get_undirected_graph()
+        self.mapping_surfaces: dict[str | None, str] = RoadGraph.MAPPING_SURFACES
+        self.graph: nx.MultiDiGraph = graph
+        self.undirected_graph: nx.Graph = self.get_undirected_graph()
+        self.subgraph: nx.MultiDiGraph | None = None
 
     def get_undirected_graph(self) -> nx.Graph:
         """
@@ -151,87 +161,28 @@ class RoadGraph:
         return nearest_nodes.tolist()
 
     @staticmethod
-    def _prune_graph(G: nx.Graph, do_not_prune: set[GraphNode]) -> bool:
-        """
-        Prunes a graph, excluding nodes in a given set.
-
-        Args:
-            G (nx.Graph): graph to be pruned.
-            do_not_prune (set[GraphNode]): a set of graph nodes that must not be pruned.
-
-        Returns:
-            bool: True if the graph was pruned, False otherwise.
-        """
-        initial_len = len(G)
-
-        # remove unprotected degree-1 nodes (dead ends)
-        dead_ends = [
-            node for node, degree in G.degree() if degree == 1 and node not in do_not_prune
-        ]
-        G.remove_nodes_from(dead_ends)
-
-        # repeat the same procedure for nodes of degree 2, merging them
-        while True:
-            target = None
-            # find an unprotected degree-2 node to prune
-            for node, deg in G.degree():
-                if deg == 2 and node not in do_not_prune:
-                    target = node
-                    break
-
-            # exit if no removable nodes of degree 2 found
-            if target is None:
-                break
-
-            neighbors = list(G.neighbors(target))
-            assert len(neighbors) == 2  # confirm node is degree 2
-
-            # get connecting edges from target to neighbors
-            neighbor_1, neighbor_2 = neighbors
-            edge_1, edge_2 = (target, neighbor_1), (target, neighbor_2)
-
-            # sanity check edge existence
-            assert edge_1 in G.edges() and edge_2 in G.edges()
-
-            # combine edge attributes
-            edge_1_data, edge_2_data = G.get_edge_data(*edge_1), G.get_edge_data(*edge_2)
-
-            new_weight = edge_1_data["weight"] + edge_2_data["weight"]
-            new_weight_paved = edge_1_data["weight_paved"] + edge_2_data["weight_paved"]
-            new_weight_dirt = edge_1_data["weight_dirt"] + edge_2_data["weight_dirt"]
-
-            # remove node
-            G.remove_node(target)
-
-            # update edge information (if necessary)
-            existing_data = G.get_edge_data(neighbor_1, neighbor_2)
-
-            if existing_data is None or new_weight < existing_data["weight"]:
-                G.add_edge(
-                    neighbor_1,
-                    neighbor_2,
-                    weight=new_weight,
-                    weight_dirt=new_weight_dirt,
-                    weight_paved=new_weight_paved,
-                )
-
-        final_len = len(G)
-        return initial_len != final_len  # check if graph was pruned
-
-    @staticmethod
-    def iteratively_prune(G: nx.Graph, not_to_touch: set) -> None:
+    def iteratively_prune(G: nx.Graph, not_to_touch: set[GraphNode]) -> None:
+        """Prunes graph using _prune_graph until fully trimmed."""
         while True:
             if not RoadGraph._prune_graph(G, not_to_touch):
                 break
 
     def build_tree(
-        self, all_ids: list[object], all_stops: list[object], root: str, plot=True
+        self, 
+        all_ids: list[GraphNode], 
+        all_stops: list[GraphNode], 
+        root: GraphNode, 
+        plot: bool = True
     ) -> tuple[nx.Graph, list]:
         """
         Calculates an approximation to the steiner tree, returns the tree and
         edges that connect the root to all stops.
 
-        A
+        Args:
+            all_ids (list[GraphNode]): a list of every graph node ID in the tree.
+            all_stops (list[GraphNode]): a list of every stop to include in the tree.
+            root (GraphNode): the ID of the root node of the graph.
+            plot (bool, optional): flag whether to plot the resulting tree or not.
         """
         all_stops_set = set(all_stops)
 
@@ -298,13 +249,6 @@ class RoadGraph:
             root_edges.append(path_edges)
 
         # create subgraph
-        # edges_subset = []
-        # for node_1, node_2 in edges_to_add_subgraph:
-        #     edges_subset.extend(self.graph.edges([node_1, node_2], keys=True))
-        # # get all multi-edges with their keys
-
-        # subgraph = self.graph.edge_subgraph(edges_subset)
-
         edges_subset = []
 
         for u, v in edges_to_add_subgraph:
@@ -437,3 +381,71 @@ class RoadGraph:
             plt.savefig(save_path, bbox_inches="tight")
 
         plt.show()
+
+    @staticmethod
+    def _prune_graph(G: nx.Graph, do_not_prune: set[GraphNode]) -> bool:
+        """
+        Prunes a graph, excluding nodes in a given set.
+
+        Args:
+            G (nx.Graph): graph to be pruned.
+            do_not_prune (set[GraphNode]): a set of graph nodes that must not be pruned.
+
+        Returns:
+            bool: True if the graph was pruned, False otherwise.
+        """
+        initial_len = len(G)
+
+        # remove unprotected degree-1 nodes (dead ends)
+        dead_ends = [
+            node for node, degree in G.degree() if degree == 1 and node not in do_not_prune
+        ]
+        G.remove_nodes_from(dead_ends)
+
+        # repeat the same procedure for nodes of degree 2, merging them
+        while True:
+            target = None
+            # find an unprotected degree-2 node to prune
+            for node, deg in G.degree():
+                if deg == 2 and node not in do_not_prune:
+                    target = node
+                    break
+
+            # exit if no removable nodes of degree 2 found
+            if target is None:
+                break
+
+            neighbors = list(G.neighbors(target))
+            assert len(neighbors) == 2  # confirm node is degree 2
+
+            # get connecting edges from target to neighbors
+            neighbor_1, neighbor_2 = neighbors
+            edge_1, edge_2 = (target, neighbor_1), (target, neighbor_2)
+
+            # sanity check edge existence
+            assert edge_1 in G.edges() and edge_2 in G.edges()
+
+            # combine edge attributes
+            edge_1_data, edge_2_data = G.get_edge_data(*edge_1), G.get_edge_data(*edge_2)
+
+            new_weight = edge_1_data["weight"] + edge_2_data["weight"]
+            new_weight_paved = edge_1_data["weight_paved"] + edge_2_data["weight_paved"]
+            new_weight_dirt = edge_1_data["weight_dirt"] + edge_2_data["weight_dirt"]
+
+            # remove node
+            G.remove_node(target)
+
+            # update edge information (if necessary)
+            existing_data = G.get_edge_data(neighbor_1, neighbor_2)
+
+            if existing_data is None or new_weight < existing_data["weight"]:
+                G.add_edge(
+                    neighbor_1,
+                    neighbor_2,
+                    weight=new_weight,
+                    weight_dirt=new_weight_dirt,
+                    weight_paved=new_weight_paved,
+                )
+
+        final_len = len(G)
+        return initial_len != final_len  # check if graph was pruned

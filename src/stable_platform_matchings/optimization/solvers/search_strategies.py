@@ -9,23 +9,37 @@ def solve_heuristic(
     optimizer: OptimizerProtocol, 
     heuristic_optimized: bool,
 ) -> None:
-    
+    """
+    Conducts one solve using the heuristic strategy, with various acceleration options
+    as specified in optimizer.options.
+
+    Args:
+        optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
+        heuristic_optimized (bool): whether to use the optimized heuristic or not.
+
+    Raises:
+        RuntimeError: no primal solution found.
+    """
+
+    # start from the root
     root_branch = Branch(set(), set())
     branches_to_evaluate = [root_branch]
     active_branches = []
 
     while True:
+        # solve each branch to be evaluated; add to active queue as needed
         for branch in branches_to_evaluate:
             branch_solution = solve_branch_heuristic(
                 optimizer=optimizer, 
                 branch=branch, 
                 heuristic_optimized=heuristic_optimized, 
             )
-            if branch_solution.status in ["stop", "integral", "infeasible"]:
+            if branch_solution.status in ["stop", "infeasible"]:
                 continue
-            elif branch_solution.status in ["heuristic"]:
+            elif branch_solution.status in ["active"]:
                 active_branches.append(branch_solution)
 
+        # terminate if no more active branches
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
@@ -43,6 +57,7 @@ def solve_heuristic(
 
             break
 
+        # terminate if early stop (stops at the root)
         if optimizer.options.early_stop:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
@@ -63,12 +78,13 @@ def solve_heuristic(
             )
             break
 
+        # prune active branches whose upper bound cannot exceed global lower bound
         active_branches = [
-            branch_solution
-            for branch_solution in active_branches
+            branch_solution for branch_solution in active_branches
             if optimizer.exceeds_global_lb(branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL)
         ]
 
+        # terminate if no more active branches
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
@@ -86,6 +102,7 @@ def solve_heuristic(
 
             break
 
+        # print summary of branches in queue
         queue_summary = [
             {
                 "matched": sorted(branch_solution.branch.forced_match),
@@ -97,10 +114,9 @@ def solve_heuristic(
             }
             for branch_solution in active_branches
         ]
-
         optimizer.output.collection("Branch summaries", queue_summary)
 
-        # choose max branch using max profit criterion
+        # choose max branch using max intermediary profit criterion
         max_branch = max(
             active_branches, key=lambda branch: branch.intermediary_profits[branch.branch_on]
         )
@@ -167,6 +183,21 @@ def solve_branch_heuristic(
     branch: Branch, 
     heuristic_optimized: bool, 
 ) -> BranchSolution:
+    """
+    Evaluate one branch in the solve using the heuristic search strategy.
+
+    Args:
+        optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
+        branch (Branch): the branch to be evaluated.
+        heuristic_optimized (bool): whether to use the optimized heuristic or not.
+
+    Raises:
+        RuntimeError: RNG not initialized.
+        RuntimeError: farmer welfare solution not present.
+
+    Returns:
+        BranchSolution: branch solve status and solution summary.
+    """
 
     if not optimizer.rng:
         raise RuntimeError("RNG not initialized.")
@@ -174,7 +205,8 @@ def solve_branch_heuristic(
     if not optimizer.initialize_branch(branch):
         return BranchSolution(status="infeasible", branch=branch)
 
-    # compute lower bound LB^n using forced solution
+    # compute lower bound LB^n by forcing solver to use min cost matching plus no-payment
+    # constraints (this is a feasible solution)
     forced_lb_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_lower_bound",
@@ -186,11 +218,11 @@ def solve_branch_heuristic(
     optimizer.output.metric("Objective", forced_lb_result.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
-    # heuristic:
+    # update lower bound if evaluating root
     if not branch.forced_match and not branch.forced_unmatch:
         optimizer.instance_summary.forced_lower_bound = forced_lb_result.platform_profit
 
-    # update global lower bound if forced lower bound is tighter
+    # update global lower bound if forced lower bound is tighter (found a better feasible sol'n)
     if optimizer.exceeds_global_lb(
         forced_lb_result.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
     ):
@@ -214,8 +246,9 @@ def solve_branch_heuristic(
 
     optimizer.output.blank()
 
-    # compute upper bound UB^n using forced solution, LP relaxation
-    # (note that min cost set is optimal if you can pay unmatched)
+    # compute upper bound UB^n by forcing solver to use min cost matching while relaxing
+    # the no-payment constraint. This makes the min cost matching automatically optimal
+    # and hence this forced upper bound is a true upper bound.
     forced_ub_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_upper_bound",
@@ -227,11 +260,11 @@ def solve_branch_heuristic(
     optimizer.output.metric("Objective", forced_ub_result.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
-    # heuristic:
+    # update upper bound if evaluating root
     if not branch.forced_match and not branch.forced_unmatch:
         optimizer.instance_summary.forced_upper_bound = forced_ub_result.platform_profit
 
-    # prune branch early if forced upper bound cannot beat existing integer solution
+    # prune branch early if upper bound cannot beat existing integer solution.
     can_improve = optimizer.exceeds_global_lb(
         forced_ub_result.platform_profit, optimizer.BRANCH_PRUNE_TOL
     )
@@ -263,7 +296,7 @@ def solve_branch_heuristic(
 
         return BranchSolution(status="stop", branch=branch)
 
-    # heuristic: optional optimize flag
+    # check that farmer welfare solution is present
     if (
         forced_ub_result.max_farmer_welfare_result is None
         or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None
@@ -274,6 +307,8 @@ def solve_branch_heuristic(
         forced_ub_result.max_farmer_welfare_result.intermediary_profits
     )
 
+    # guide using intermediary profits from max farmer welfare solution if using guided
+    # option, otherwise sample randomly for positive profit intermediaries.
     if heuristic_optimized:
         intermediary_profits = max_farmer_welfare_int_profits
     else:
@@ -301,7 +336,7 @@ def solve_branch_heuristic(
         return BranchSolution(status="stop", branch=branch)
 
     return BranchSolution(
-        status="heuristic",
+        status="active",
         branch=branch,
         branch_on=branch_on,
         intermediary_profits=intermediary_profits,
@@ -312,18 +347,24 @@ def solve_branch_heuristic(
 def solve_exact(
     optimizer: OptimizerProtocol
 ) -> None:
-    """Perform a full exact branch-and-price solver.
 
-    This method orchestrates branching on fractional variables and
-    maintains global best bounds, returning a summary of the best
-    integral solution found.
+    """
+    Conducts one solve using the full exact branch-and-price strategy.
+
+    Args:
+        optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
+
+    Raises:
+        RuntimeError: no primal solution found.
     """
 
+    # start from the root
     root_branch = Branch(set(), set())
     branches_to_evaluate = [root_branch]
     active_branches = []
 
     while True:
+        # solve each branch to be evaluated; add to active queue as needed
         for branch in branches_to_evaluate:
             branch_solution = solve_branch_exact(
                 optimizer=optimizer, 
@@ -334,6 +375,7 @@ def solve_exact(
             elif branch_solution.status in ["fractional"]:
                 active_branches.append(branch_solution)
 
+        # terminate if no more active branches
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
@@ -353,6 +395,7 @@ def solve_exact(
 
             break
 
+        # print summary of remaining branches in queue
         queue_summary = [
             {
                 "matched": sorted(branch_solution.branch.forced_match),
@@ -367,12 +410,13 @@ def solve_exact(
 
         optimizer.output.collection("Branch summaries", queue_summary)
 
+        # prune branches whose upper bound cannot exceed global lower bound
         active_branches = [
-            branch_solution
-            for branch_solution in active_branches
+            branch_solution for branch_solution in active_branches
             if optimizer.exceeds_global_lb(branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL)
         ]
 
+        # terminate if no more active branches
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
@@ -459,21 +503,17 @@ def solve_branch_exact(
 ) -> BranchSolution:
     """Perform an exact branch-and-price iteration on a given branch.
 
-    Parameters
-    ----------
-    branch : Branch
-        Branching restrictions to apply (fixed matches/unmatches).
+    Args:
+        branch (Branch): Branching restrictions to apply (fixed matches/unmatches).
 
-    Returns
-    -------
-    dict
-        Information about the branch outcome including status codes,
-        potential branching variable, and bound values.
+    Returns:
+        BranchSolution: branch solve status and solution summary.
     """
     if not optimizer.initialize_branch(branch):
         return BranchSolution(status="infeasible", branch=branch)
 
-    # compute lower bound LB^n using forced solution
+    # compute lower bound LB^n by forcing solver to use min cost matching plus no-payment
+    # constraints (this is a feasible solution)
     forced_lb_result = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_lower_bound",
@@ -511,7 +551,9 @@ def solve_branch_exact(
 
     optimizer.output.blank()
 
-    # compute upper bound UB^n using forced solution, LP relaxation
+    # compute upper bound UB^n by forcing solver to use min cost matching while relaxing
+    # the no-payment constraint. This makes the min cost matching automatically optimal
+    # and hence this forced upper bound is a true upper bound.
     forced_ub_solution = optimizer.solve_primal_for_branch(
         branch=branch, 
         sol_type="forced_upper_bound",
@@ -523,7 +565,7 @@ def solve_branch_exact(
     optimizer.output.metric("Objective", forced_ub_solution.platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
-    # prune branch early if forced upper bound cannot beat existing integer solution
+    # prune branch early if upper bound cannot beat existing integer solution
     can_improve = optimizer.exceeds_global_lb(
         forced_ub_solution.platform_profit, optimizer.BRANCH_PRUNE_TOL
     )
@@ -596,7 +638,6 @@ def solve_branch_exact(
         if optimizer.INT_TOL < intermediary_probabilities[intermediary_id] < 1 - optimizer.INT_TOL:
             solution_is_integral = False
             break
-        
 
     # branch if fractional, update bounds if integral
     if solution_is_integral:
