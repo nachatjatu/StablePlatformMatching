@@ -201,10 +201,10 @@ def run_one(
     )
 
     options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=True,
+        early_stop_threshold=0.0,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
@@ -212,7 +212,6 @@ def run_one(
     )
 
     summary = optimizer.solve(options)
-
 
     return {
         "schema_version": 1,

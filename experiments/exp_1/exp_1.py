@@ -149,10 +149,10 @@ def run_one(
     # solve
     print("Solving no pay...")
     options_no_pay = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=0.0,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
@@ -162,10 +162,10 @@ def run_one(
 
     print("Solving pay...")
     options_pay = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=True,
         seed=optimizer_seed,

@@ -87,10 +87,10 @@ def run_one(
     # solve
     print("Solving...")
     options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=0.0,
         hist_set_method=hist_set_method,
         pay_unmatched=False,
         seed=optimizer_seed,

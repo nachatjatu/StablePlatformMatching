@@ -199,10 +199,10 @@ class Optimizer:
         # solve using specified search strategy
         if self.options.strategy == "exact":
             solve_exact(self)
-        elif self.options.strategy == "heuristic_unoptimized":
-            solve_heuristic(self, heuristic_optimized=False)
+        elif self.options.strategy == "heuristic_vanilla":
+            solve_heuristic(self, heuristic_accelerated=False)
         else:
-            solve_heuristic(self, heuristic_optimized=True)
+            solve_heuristic(self, heuristic_accelerated=True)
 
         # raise error if optimization fails to find a solution
         if self.best_lb_result is None or self.best_lb_set is None:
@@ -323,7 +323,7 @@ class Optimizer:
         Returns:
             PrimalSolution: summarizes the solution including profits and cut information.
         """
-        
+
         # first get all valid intermediary selections
         # consistent with branch forced match/unmatch restrictions
         valid_intermediary_sets = [
@@ -1292,6 +1292,14 @@ class Optimizer:
                 for intermediary_id, hist_sets
                 in self._original_hist_sets.items()
             }
+        elif hist_set_method == "instance_farmers":
+            self.active_hist_sets = {}
+            for intermediary in self.instance.intermediaries:
+                instance_farmers = frozenset([
+                    f.id for f in self.instance.farmers
+                    if f.intermediary_id == intermediary.id
+                ])
+                self.active_hist_sets[intermediary.id] = (instance_farmers,)
         elif hist_set_method == "all":
             self.active_hist_sets = {}
             for intermediary in self.instance.intermediaries:
@@ -1304,14 +1312,6 @@ class Optimizer:
                     hist_farmers = hist_farmers.union(hist_set) 
                 all = instance_farmers.union(hist_farmers)
                 self.active_hist_sets[intermediary.id] = (all,)
-        elif hist_set_method == "instance_farmers":
-            self.active_hist_sets = {}
-            for intermediary in self.instance.intermediaries:
-                instance_farmers = frozenset([
-                    f.id for f in self.instance.farmers
-                    if f.intermediary_id == intermediary.id
-                ])
-                self.active_hist_sets[intermediary.id] = (instance_farmers,)
         elif hist_set_method == "original":
             self.active_hist_sets = {
                 intermediary_id: hist_sets

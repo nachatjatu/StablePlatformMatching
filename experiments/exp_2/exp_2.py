@@ -150,10 +150,10 @@ def run_one(
     # solve
     print("Solving vanilla no pay...")
     vanilla_no_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
@@ -163,10 +163,10 @@ def run_one(
 
     print("Solving vanilla pay...")
     vanilla_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=True,
         seed=optimizer_seed,
@@ -176,10 +176,10 @@ def run_one(
 
     print("Solving structured no pay...")
     structured_no_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=True,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         stabilize_final_solution=True
@@ -188,10 +188,10 @@ def run_one(
 
     print("Solving structured pay...")
     structured_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=True,
         dominance_constraints=False,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=True,
         seed=optimizer_seed,
@@ -201,10 +201,10 @@ def run_one(
 
     print("Solving dominance no pay...")
     dominance_no_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=True,
-        early_stop=False,
+        early_stop_threshold=float(1e-4),
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
@@ -214,10 +214,10 @@ def run_one(
 
     print("Solving dominance pay...")
     dominance_pay_options = SolverOptions(
-        strategy="heuristic_optimized",
+        strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=True,
-        early_stop=False,
+        early_stop_threshold=0.0,
         hist_set_method="instance_farmers",
         pay_unmatched=True,
         seed=optimizer_seed,

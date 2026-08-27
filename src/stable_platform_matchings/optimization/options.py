@@ -7,7 +7,7 @@ from ..domain.instance import Instance
 
 Backend = Literal["gurobi"]
 VRPMode = Literal["exact", "approximate"]
-SolverStrategy = Literal["exact", "heuristic_optimized", "heuristic_unoptimized"]
+SolverStrategy = Literal["exact", "heuristic_accelerated", "heuristic_vanilla"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,10 +101,10 @@ class OptimizerParams:
 @dataclass(frozen=True, slots=True)
 class SolverOptions:
     seed: int = 0
-    strategy: SolverStrategy = "heuristic_optimized"
+    strategy: SolverStrategy = "heuristic_accelerated"
     structured_farmer_payments: bool = False
     dominance_constraints: bool = False
-    early_stop: bool = False
+    early_stop_threshold: float = float("inf")
     hist_set_method: str = "instance_farmers"
     pay_unmatched: bool = False
     stabilize_final_solution: bool = True
@@ -116,13 +116,12 @@ class SolverOptions:
         if type(self.strategy) is not str:
             raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")
 
-        if self.strategy not in {"exact", "heuristic_optimized", "heuristic_unoptimized"}:
+        if self.strategy not in {"exact", "heuristic_accelerated", "heuristic_vanilla"}:
             raise ValueError(f"Unsupported strategy: {self.strategy}")
 
         for name in (
             "structured_farmer_payments",
             "dominance_constraints",
-            "early_stop",
             "pay_unmatched",
         ):
             value = getattr(self, name)

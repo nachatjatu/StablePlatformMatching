@@ -7,7 +7,7 @@ from .optimizer_protocol import OptimizerProtocol
 
 def solve_heuristic(
     optimizer: OptimizerProtocol, 
-    heuristic_optimized: bool,
+    heuristic_accelerated: bool,
 ) -> None:
     """
     Conducts one solve using the heuristic strategy, with various acceleration options
@@ -15,7 +15,7 @@ def solve_heuristic(
 
     Args:
         optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
-        heuristic_optimized (bool): whether to use the optimized heuristic or not.
+        heuristic_accelerated (bool): whether to use the optimized heuristic or not.
 
     Raises:
         RuntimeError: no primal solution found.
@@ -32,7 +32,7 @@ def solve_heuristic(
             branch_solution = solve_branch_heuristic(
                 optimizer=optimizer, 
                 branch=branch, 
-                heuristic_optimized=heuristic_optimized, 
+                heuristic_accelerated=heuristic_accelerated, 
             )
             if branch_solution.status in ["stop", "infeasible"]:
                 continue
@@ -57,21 +57,25 @@ def solve_heuristic(
 
             break
 
-        # terminate if early stop (stops at the root)
-        if optimizer.options.early_stop:
+        optimizer.best_ub = min(
+            max(branch_solution.upper_bound for branch_solution in active_branches),
+            optimizer.best_ub
+        )
+
+        # terminate if optimality gap is small enough
+        if (
+            relative_gap(optimizer.best_lb, optimizer.best_ub) 
+            <= optimizer.options.early_stop_threshold
+        ):
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
-            
-            optimizer.best_ub = max(
-                branch_solution.upper_bound for branch_solution in active_branches
-            )
             
             optimizer.record_summary()
 
             print_bound_update(
                 optimizer,
                 title="Search Complete",
-                status="Early stopping requested",
+                status="Early stopping; relative gap below threshold",
                 previous_lb=previous_lb,
                 previous_ub=previous_ub,
                 fill="=",
@@ -181,7 +185,7 @@ def solve_heuristic(
 def solve_branch_heuristic(
     optimizer: OptimizerProtocol, 
     branch: Branch, 
-    heuristic_optimized: bool, 
+    heuristic_accelerated: bool, 
 ) -> BranchSolution:
     """
     Evaluate one branch in the solve using the heuristic search strategy.
@@ -189,7 +193,7 @@ def solve_branch_heuristic(
     Args:
         optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
         branch (Branch): the branch to be evaluated.
-        heuristic_optimized (bool): whether to use the optimized heuristic or not.
+        heuristic_accelerated (bool): whether to use the optimized heuristic or not.
 
     Raises:
         RuntimeError: RNG not initialized.
@@ -309,7 +313,7 @@ def solve_branch_heuristic(
 
     # guide using intermediary profits from max farmer welfare solution if using guided
     # option, otherwise sample randomly for positive profit intermediaries.
-    if heuristic_optimized:
+    if heuristic_accelerated:
         intermediary_profits = max_farmer_welfare_int_profits
     else:
         intermediary_profits = {
@@ -393,6 +397,31 @@ def solve_exact(
                 fill=".",
             )
 
+            break
+
+        optimizer.best_ub = min(
+            max(branch_solution.upper_bound for branch_solution in active_branches),
+            optimizer.best_ub
+        )
+
+        # terminate if optimality gap is small enough
+        if (
+            relative_gap(optimizer.best_lb, optimizer.best_ub) 
+            <= optimizer.options.early_stop_threshold
+        ):
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+            
+            optimizer.record_summary()
+
+            print_bound_update(
+                optimizer,
+                title="Search Complete",
+                status="Early stopping; relative gap below threshold",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill="=",
+            )
             break
 
         # print summary of remaining branches in queue
@@ -526,6 +555,7 @@ def solve_branch_exact(
     optimizer.output.metric("Objective", forced_lb_platform_profit)
     optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
 
+    # update lower bound if evaluating root
     if not branch.forced_match and not branch.forced_unmatch:
         optimizer.instance_summary.forced_lower_bound = forced_lb_result.platform_profit
 
