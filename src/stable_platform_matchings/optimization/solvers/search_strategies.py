@@ -169,7 +169,9 @@ def solve_heuristic(
         optimizer.output.message(f"Left branch:  force {branch_on} = 1", indent=1)
         optimizer.output.message(f"Right branch: force {branch_on} = 0", indent=1)
 
-        left_branch = Branch(parent_branch.forced_match | {branch_on}, parent_branch.forced_unmatch)
+        left_branch = Branch(
+            parent_branch.forced_match | {branch_on}, parent_branch.forced_unmatch
+        )
         right_branch = Branch(
             parent_branch.forced_match, parent_branch.forced_unmatch | {branch_on}
         )
@@ -253,12 +255,20 @@ def solve_branch_heuristic(
     # compute upper bound UB^n by forcing solver to use min cost matching while relaxing
     # the no-payment constraint. This makes the min cost matching automatically optimal
     # and hence this forced upper bound is a true upper bound.
-    forced_ub_result = optimizer.solve_primal_for_branch(
-        branch=branch, 
-        sol_type="forced_upper_bound",
-        compute_farmer_welfare=True,
-        compute_intermediary_welfare=False
-    )
+    if optimizer.options.early_stop_threshold == float("inf"):
+        forced_ub_result = optimizer.solve_primal_for_branch(
+            branch=branch, 
+            sol_type="forced_upper_bound",
+            compute_farmer_welfare=False,
+            compute_intermediary_welfare=False
+        )
+    else:
+        forced_ub_result = optimizer.solve_primal_for_branch(
+            branch=branch, 
+            sol_type="forced_upper_bound",
+            compute_farmer_welfare=True,
+            compute_intermediary_welfare=False
+        )
 
     optimizer.output.subsection("Upper-Bound Candidate")
     optimizer.output.metric("Objective", forced_ub_result.platform_profit)
@@ -300,52 +310,59 @@ def solve_branch_heuristic(
 
         return BranchSolution(status="stop", branch=branch)
 
-    # check that farmer welfare solution is present
-    if (
-        forced_ub_result.max_farmer_welfare_result is None
-        or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None
-    ):
-        raise RuntimeError("updated_intermediary_profits is None.")
-
-    max_farmer_welfare_int_profits = (
-        forced_ub_result.max_farmer_welfare_result.intermediary_profits
-    )
-
-    # guide using intermediary profits from max farmer welfare solution if using guided
-    # option, otherwise sample randomly for positive profit intermediaries.
-    if heuristic_accelerated:
-        intermediary_profits = max_farmer_welfare_int_profits
+    if optimizer.options.early_stop_threshold == float("inf"):
+        return BranchSolution(
+            status="active",
+            branch=branch,
+            upper_bound=forced_ub_result.platform_profit,
+        )
     else:
-        intermediary_profits = {
-            intermediary_id: optimizer.rng.uniform(0, 1)
-            if max_farmer_welfare_int_profits[intermediary_id] > optimizer.RANDOM_BRANCH_TOL
-            else 0.0
-            for intermediary_id in optimizer.intermediary_ids
-        }
-
-    branch_on = None
-    max_profit = -float("inf")
-    for intermediary_id in intermediary_profits:
+        # check that farmer welfare solution is present
         if (
-            intermediary_id not in branch.min_cost_set
-            and intermediary_id not in branch.forced_match
-            and intermediary_id not in branch.forced_unmatch
+            forced_ub_result.max_farmer_welfare_result is None
+            or forced_ub_result.max_farmer_welfare_result.intermediary_profits is None
         ):
-            if intermediary_profits[intermediary_id] > max_profit:
-                max_profit = intermediary_profits[intermediary_id]
-                branch_on = intermediary_id
+            raise RuntimeError("farmer welfare solution is not present.")
 
-    if branch_on is None:
-        optimizer.output.status("No eligible intermediary remains for branching; closing branch")
-        return BranchSolution(status="stop", branch=branch)
+        max_farmer_welfare_int_profits = (
+            forced_ub_result.max_farmer_welfare_result.intermediary_profits
+        )
 
-    return BranchSolution(
-        status="active",
-        branch=branch,
-        branch_on=branch_on,
-        intermediary_profits=intermediary_profits,
-        upper_bound=forced_ub_result.platform_profit,
-    )
+        # guide using intermediary profits from max farmer welfare solution if using guided
+        # option, otherwise sample randomly for positive profit intermediaries.
+        if heuristic_accelerated:
+            intermediary_profits = max_farmer_welfare_int_profits
+        else:
+            intermediary_profits = {
+                intermediary_id: optimizer.rng.uniform(0, 1)
+                if max_farmer_welfare_int_profits[intermediary_id] > optimizer.RANDOM_BRANCH_TOL
+                else 0.0
+                for intermediary_id in optimizer.intermediary_ids
+            }
+
+        branch_on = None
+        max_profit = -float("inf")
+        for intermediary_id in intermediary_profits:
+            if (
+                intermediary_id not in branch.min_cost_set
+                and intermediary_id not in branch.forced_match
+                and intermediary_id not in branch.forced_unmatch
+            ):
+                if intermediary_profits[intermediary_id] > max_profit:
+                    max_profit = intermediary_profits[intermediary_id]
+                    branch_on = intermediary_id
+
+        if branch_on is None:
+            optimizer.output.status("No eligible intermediary remains for branching; closing branch")
+            return BranchSolution(status="stop", branch=branch)
+
+        return BranchSolution(
+            status="active",
+            branch=branch,
+            branch_on=branch_on,
+            intermediary_profits=intermediary_profits,
+            upper_bound=forced_ub_result.platform_profit,
+        )
 
 
 def solve_exact(

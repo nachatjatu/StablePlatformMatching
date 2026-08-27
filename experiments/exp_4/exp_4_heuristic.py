@@ -204,7 +204,7 @@ def run_one(
         strategy="heuristic_accelerated",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop_threshold=0.0,
+        early_stop_threshold=float("inf"),
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,
