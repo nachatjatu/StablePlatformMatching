@@ -50,6 +50,9 @@ class Intermediary(Entity):
     capacity: float = TRUCK_CAPACITY_TONS
     hist_sets: list[frozenset[str]] = field(default_factory=list[frozenset[str]])
 
+    def __repr__(self):
+        return f"Intermediary(id={self.id}, location={self.location})"
+
 
 @dataclass
 class Mill(Entity):
