@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Mapping, TypeAlias
 
 if TYPE_CHECKING:
     from ..optimization.branch import Branch
@@ -157,9 +157,11 @@ class InstanceSummary:
     """Final platform outcome and optimization-run diagnostics."""
 
     instance_snapshot: dict[str, object]
-    
+
     params: OptimizerParams
     strategy: str
+
+    epsilons: Mapping[str, float] = field(default_factory=dict)
 
     start_time: float = field(default_factory=time.time)
     platform_solve_result: BranchPrimalResult | None = None
@@ -184,7 +186,7 @@ class InstanceSummary:
             "instance_snapshot": self.instance_snapshot,
             "params": {
                 "het_costs": dict(self.params.het_costs),
-                "epsilons": dict(self.params.epsilons),
+                "epsilons": dict(self.epsilons),
                 "backend": self.params.backend,
                 "vrp_mode": self.params.vrp_mode,
                 "vrp_time_limit_seconds": (

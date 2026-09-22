@@ -5,10 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import dataclasses
 import numpy as np
 import math
-import copy
 
 from stable_platform_matchings import Optimizer, InstanceGenerator
 from stable_platform_matchings.optimization.options import OptimizerParams, SolverOptions
@@ -92,7 +90,6 @@ def run_one(
     print("Initializing optimizer...")
     params = OptimizerParams(
         het_costs=het_costs,
-        epsilons=naive_epsilons,
         backend="gurobi",
         vrp_mode="approximate",
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
@@ -103,10 +100,6 @@ def run_one(
         params=params,
     )
 
-    optimizer_naive = copy.deepcopy(optimizer)
-    optimizer_scaled_root = copy.deepcopy(optimizer)
-    optimizer_scaled = copy.deepcopy(optimizer)
-    
 
     # solve with naive epsilon
     options = SolverOptions(
@@ -122,20 +115,17 @@ def run_one(
 
     # naive
     print("Solving naive...")
-    optimizer_naive.params = dataclasses.replace(optimizer_naive.params, epsilons=naive_epsilons)
-    optimizer_naive.params.validate(instance)
-    summary_naive = optimizer_naive.solve(options)
+    summary_naive = optimizer.solve(options, epsilons=naive_epsilons)
 
     # scaled
     print("Solving scaled root...")
-    optimizer_scaled_root.params = dataclasses.replace(optimizer_scaled_root.params, epsilons=scaled_root_epsilons)
-    optimizer_scaled_root.params.validate(instance)
-    summary_scaled_root = optimizer_scaled_root.solve(options)
+    summary_scaled_root = optimizer.solve(
+        options,
+        epsilons=scaled_root_epsilons,
+    )
 
     print("Solving scaled...")
-    optimizer_scaled.params = dataclasses.replace(optimizer_scaled.params, epsilons=scaled_epsilons)
-    optimizer_scaled.params.validate(instance)
-    summary_scaled = optimizer_scaled.solve(options)
+    summary_scaled = optimizer.solve(options, epsilons=scaled_epsilons)
 
     return {
         "schema_version": 1,
@@ -151,12 +141,8 @@ def run_one(
             ),
             "hist_set_method": hist_set_method
         },
-        "sampled_inputs": {
-            "naive_epsilons": naive_epsilons,
-            "scaled_root_epsilons": scaled_root_epsilons,
-            "scaled_epsilons": scaled_epsilons,
-            "het_costs": het_costs,
-        },
+        # epsilons and het_costs are recorded by the summary itself
+        # (summary.params); farmer quantities by its instance_snapshot.
         "summary_naive": summary_naive.return_dict(),
         "summary_scaled_root": summary_scaled_root.return_dict(),
         "summary_scaled": summary_scaled.return_dict(),
@@ -232,13 +218,11 @@ def main() -> None:
 
     save_path = results_path / f"job_{job_id}.json.gz"
 
-    job_payload: dict[str, Any] = {
-        "schema_version": 1,
-        "job_id": job_id,
-        "experiment_metadata": experiment_metadata,
-        "n_runs": 0,
-        "runs": [],
-    }
+    job_payload = utils.JobPayload(
+        schema_version=1,
+        job_id=job_id,
+        experiment_metadata=experiment_metadata,
+    )
 
     for n_hist_sets in N_HIST_SETS:
         run_payload = run_one(
@@ -251,28 +235,12 @@ def main() -> None:
         )
 
         # format results for correctness
-        safe_run_payload = utils.encode_nonfinite(run_payload)
-        nonfinite_values = utils.find_nonfinite(safe_run_payload)
-        if nonfinite_values:
-            print("Found non-finite values:")
-            for path, value in nonfinite_values:
-                print(f"  {path} = {value!r}")
-
-            raise ValueError(
-                f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-            )
-
-        # add results to the job payload and save
-        job_payload["runs"].append(safe_run_payload)
-        job_payload["n_runs"] = len(job_payload["runs"])
-        utils.save_json_gz_atomic(
-            payload=job_payload,
-            save_path=save_path,
-        )
+        job_payload.add_run(run_payload)
+        job_payload.save(save_path)
 
         print(
             f"Saved n_hist_sets {n_hist_sets} "
-            f"({job_payload['n_runs']}/{len(N_HIST_SETS)}) "
+            f"({job_payload.n_runs}/{len(N_HIST_SETS)}) "
             f"to {save_path}"
         )
 

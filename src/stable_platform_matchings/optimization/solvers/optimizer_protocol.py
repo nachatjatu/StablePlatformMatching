@@ -1,10 +1,11 @@
-from typing import Protocol
+from typing import Mapping, Protocol
 import numpy as np
 
 from ...reporting.containers import InstanceSummary, BranchPrimalResult, BranchDualResult
 from ...reporting.printer import Printer
 from ..branch import Branch
-from ..options import SolverOptions
+from ..options import SolverOptions, OptimizerParams
+from ...domain.instance import Instance
 
 
 class OptimizerProtocol(Protocol):
@@ -16,9 +17,23 @@ class OptimizerProtocol(Protocol):
     oracle_calls: list[int]
     total_oracle_calls: int
     options: SolverOptions
-    output: Printer
     instance_summary: InstanceSummary
+
+    params: OptimizerParams
+    output: Printer
+    instance: Instance
+    n_farmers: int
+    n_intermediaries: int
+
+    farmer_ids: list[str]
     intermediary_ids: list[str]
+
+    het_costs: Mapping[str, float]
+
+    # set per solve, not at construction
+    epsilons: Mapping[str, float]
+    status_quo_quantities: dict[str, float]
+
 
     rng: np.random.Generator | None
 
@@ -45,3 +60,4 @@ class OptimizerProtocol(Protocol):
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool: ...
 
     def record_summary(self) -> None: ...
+

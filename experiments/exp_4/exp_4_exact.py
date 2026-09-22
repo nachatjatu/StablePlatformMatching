@@ -187,7 +187,6 @@ def run_one(
 
     params = OptimizerParams(
         het_costs=het_costs,
-        epsilons=epsilons,
         backend="gurobi",
         vrp_mode="approximate",
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
@@ -211,7 +210,7 @@ def run_one(
         stabilize_final_solution=False
     )
 
-    summary = optimizer.solve(options)
+    summary = optimizer.solve(options, epsilons=epsilons)
 
 
     return {
@@ -227,11 +226,8 @@ def run_one(
             ),
             "instance_file": instance_path.name,
         },
-        "sampled_inputs": {
-            "quantities": quantities,
-            "epsilons": epsilons,
-            "het_costs": het_costs,
-        },
+        # epsilons and het_costs are recorded by the summary itself
+        # (summary.params); farmer quantities by its instance_snapshot.
         "summary": summary.return_dict(),
     }
 
@@ -321,16 +317,7 @@ def main() -> None:
     )
 
     # format results for correctness
-    safe_run_payload = utils.encode_nonfinite(run_payload)
-    nonfinite_values = utils.find_nonfinite(safe_run_payload)
-    if nonfinite_values:
-        print("Found non-finite values:")
-        for path, value in nonfinite_values:
-            print(f"  {path} = {value!r}")
-
-        raise ValueError(
-            f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-        )
+    safe_run_payload = utils.encode_and_check(run_payload)
 
     # add results to the job payload and save
     job_payload["run"] = safe_run_payload

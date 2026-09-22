@@ -63,7 +63,8 @@ class Instance:
         graph_node_to_entity_ids (dict[GraphNode, list[str]]): maps each OSMNX graph node
             ID to a list of associated entity IDs.
 
-        status_quo_quantities (dict[str, float]): maps intermediary ID to average quantity.
+        original_status_quo_quantities (dict[str, float]): maps intermediary ID to the
+            quantity of its recorded historical schedules, averaged over those schedules.
     """
 
     FRUIT_PRICE_PER_KG = 2513   # local currency (IDR)
@@ -142,7 +143,9 @@ class Instance:
         self.graph_node_to_entity_ids: dict[GraphNode, list[str]] = {}
 
         # store derived quantities
-        self.status_quo_quantities: dict[str, float] = self._calculate_avg_hist_quantities()
+        self.original_status_quo_quantities: dict[str, float] = (
+            self._calculate_status_quo_quantities()
+        )
 
 
     def to_snapshot(self) -> dict[str, object]:
@@ -187,7 +190,9 @@ class Instance:
                     "dirt_to_mill": finite_or_none(
                         getattr(intermediary, "dirt_to_mill", None)
                     ),
-                    "status_quo_quantity": self.status_quo_quantities[intermediary.id]
+                    "original_status_quo_quantity": (
+                        self.original_status_quo_quantities[intermediary.id]
+                    )
                 }
                 for intermediary in self.intermediaries
             ],
@@ -547,9 +552,16 @@ class Instance:
             graph_node_to_entity_ids[graph_node].append(entity_id)
         self.graph_node_to_entity_ids = dict(graph_node_to_entity_ids)
 
-    def _calculate_avg_hist_quantities(self) -> dict[str, float]:
+    def _calculate_status_quo_quantities(self) -> dict[str, float]:
         """
-        Calculate average historical quantities for each intermediary.
+        Calculate each intermediary's status-quo quantity from its recorded schedules,
+        averaged over those schedules.
+
+        This reflects the schedules as recorded on the instance. A solve may instead
+        derive the status quo from a different construction -- see
+        `SolverOptions.hist_set_method` and `domain.hist_sets` -- in which case the
+        quantity the stability constraints are built against differs from this one, and
+        `Optimizer.status_quo_quantities` is the value to use.
 
         Returns:
             dict[str, float]: dict that maps intermediary ID to avg. quantity.

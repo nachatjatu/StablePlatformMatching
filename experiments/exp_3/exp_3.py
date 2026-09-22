@@ -73,7 +73,6 @@ def run_one(
     print("Initializing optimizer...")
     params = OptimizerParams(
         het_costs=het_costs,
-        epsilons=epsilons,
         backend="gurobi",
         vrp_mode="approximate",
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
@@ -96,7 +95,7 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary = optimizer.solve(options)
+    summary = optimizer.solve(options, epsilons=epsilons)
 
     return {
         "schema_version": 1,
@@ -112,10 +111,8 @@ def run_one(
             ),
             "hist_set_method": hist_set_method
         },
-        "sampled_inputs": {
-            "epsilons": epsilons,
-            "het_costs": het_costs,
-        },
+        # epsilons and het_costs are recorded by the summary itself
+        # (summary.params); farmer quantities by its instance_snapshot.
         "summary": summary.return_dict(),
     }
 
@@ -208,16 +205,7 @@ def main() -> None:
         )
 
         # format results for correctness
-        safe_run_payload = utils.encode_nonfinite(run_payload)
-        nonfinite_values = utils.find_nonfinite(safe_run_payload)
-        if nonfinite_values:
-            print("Found non-finite values:")
-            for path, value in nonfinite_values:
-                print(f"  {path} = {value!r}")
-
-            raise ValueError(
-                f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-            )
+        safe_run_payload = utils.encode_and_check(run_payload)
 
         # add results to the job payload and save
         job_payload["n_hist_sets"].append(safe_run_payload)
@@ -244,16 +232,7 @@ def main() -> None:
     )
     
     # format results for correctness
-    safe_run_payload = utils.encode_nonfinite(run_payload)
-    nonfinite_values = utils.find_nonfinite(safe_run_payload)
-    if nonfinite_values:
-        print("Found non-finite values:")
-        for path, value in nonfinite_values:
-            print(f"  {path} = {value!r}")
-
-        raise ValueError(
-            f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-        )
+    safe_run_payload = utils.encode_and_check(run_payload)
 
     # add results to the job payload and save
     job_payload["n_hist_sets"].append(safe_run_payload)

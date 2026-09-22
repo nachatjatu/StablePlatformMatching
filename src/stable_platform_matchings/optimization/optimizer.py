@@ -7,6 +7,7 @@ from pprint import pformat
 
 import gurobipy as gp
 
+from ..domain.hist_sets import configure_hist_sets, status_quo_quantities
 from ..domain.instance import Instance
 from ..domain.route import Route
 from ..reporting.containers import (
@@ -17,10 +18,10 @@ from ..reporting.containers import (
 )
 from ..reporting.printer import Printer
 from .branch import Branch
-from .options import OptimizerParams, SolverOptions
+from .options import OptimizerParams, SolverOptions, validate_epsilons
 from .solvers.dynamic_solvers import DynamicTSPSolver
 from .solvers.lp_solvers import GurobiVRPSolver
-from .solvers.search_strategies import solve_exact, solve_heuristic
+from .solvers.search_strategies import solve_exact, solve_heuristic, solve_npm
 
 IntermediaryId = str
 FarmerId = str
@@ -97,14 +98,8 @@ class Optimizer:
         self.vrp_solver = GurobiVRPSolver(self.instance)
         self.tsp_solver = DynamicTSPSolver(self.instance)
 
-        self._original_hist_sets = {
-            intermediary.id: (
-                tuple(frozenset(hist_set) for hist_set in intermediary.hist_sets) 
-                or (frozenset(),)
-            )
-            for intermediary in self.instance.intermediaries
-        }
         self._configure_hist_sets(hist_set_method="original")
+        self._compute_status_quo_quantities()
 
         self.routing_cost_by_truck_count = self._initialize_routing_cost_by_truck_count()
 
@@ -125,10 +120,16 @@ class Optimizer:
         self.best_lb_result: BranchPrimalResult | None = None
         self.best_lb_set: frozenset[str] | None = None
 
+        self.het_costs: Mapping[str, float] = params.het_costs
+
         initial_set_to_cost = self._initialize_intermediary_set_to_cost()
 
         self._initial_intermediary_set_to_cost = initial_set_to_cost.copy()
         self.intermediary_set_to_cost = initial_set_to_cost.copy()
+
+        # Ambiguity levels are set per solve. Nothing cached above depends on them, so
+        # one Optimizer can be reused across an ambiguity sweep.
+        self.epsilons: Mapping[str, float] = {}
 
         self.dominance_relations: list[tuple[str, str]] = []
         self.best_lb, self.best_ub = -float("inf"), float("inf")
@@ -137,11 +138,22 @@ class Optimizer:
         self.total_oracle_calls = 0
         self.oracle_calls = []
 
-    def solve(self, options: SolverOptions) -> InstanceSummary:
+    def solve(
+        self,
+        options: SolverOptions,
+        epsilons: Mapping[str, float],
+    ) -> InstanceSummary:
         """
         Public entrypoint to run optimization with a given strategy.
 
+        Ambiguity levels are supplied per solve rather than at construction, so a
+        single Optimizer -- and in particular its cached VRP routing costs -- can be
+        reused across an ambiguity sweep. All solver state is reset here, so a reused
+        Optimizer yields the same results as a freshly constructed one.
+
         Args:
+            options (SolverOptions): solver strategy and policy switches.
+            epsilons (Mapping[str, float]): maps intermediary ID to ambiguity level.
 
         Raises:
             ValueError: unknown solver strategy.
@@ -152,14 +164,19 @@ class Optimizer:
                 and # of oracle calls
         """
 
+        validate_epsilons(self.instance, epsilons)
+
         self.options = options
-        
+        self.epsilons = epsilons
+
         self._print_solver_options()
 
         if self.options.structured_farmer_payments:
             self._verify_farmer_distances()
 
         self._configure_hist_sets(self.options.hist_set_method)
+        self._compute_status_quo_quantities()
+
         self.dominance_relations = (
             self._calc_dominance() if self.options.dominance_constraints else []
         )
@@ -187,9 +204,10 @@ class Optimizer:
 
         # construct instance summary
         self.instance_summary = InstanceSummary(
-            instance_snapshot=self.instance.to_snapshot(), 
-            params=self.params, 
-            strategy=self.options.strategy
+            instance_snapshot=self.instance.to_snapshot(),
+            params=self.params,
+            strategy=self.options.strategy,
+            epsilons=dict(self.epsilons)
         )
 
         self.output.section(f"Strategy: {self.options.strategy}")
@@ -201,8 +219,10 @@ class Optimizer:
             solve_exact(self)
         elif self.options.strategy == "heuristic_vanilla":
             solve_heuristic(self, heuristic_accelerated=False)
-        else:
+        elif self.options.strategy == "heuristic_accelerated":
             solve_heuristic(self, heuristic_accelerated=True)
+        elif self.options.strategy == "network_prioritized":
+            solve_npm(self)
 
         # raise error if optimization fails to find a solution
         if self.best_lb_result is None or self.best_lb_set is None:
@@ -432,7 +452,7 @@ class Optimizer:
 
         # constraint 8: payment must be >= avg worst-case deviation
         #   opportunity from hist set + robust premium
-        epsilons = self.params.epsilons
+        epsilons = self.epsilons
         for intermediary in self.instance.intermediaries:
             # note that constraint 7 makes kappa equal to max deviation
             #   opportunity from historical set
@@ -579,7 +599,7 @@ class Optimizer:
                         violation = (
                             obj
                             - kappa_val[intermediary.id, hist_set_index]
-                            - self.params.het_costs[intermediary.id]
+                            - self.het_costs[intermediary.id]
                         )
 
                         farmer_ids_set = frozenset([farmer.id for farmer in route.farmers])
@@ -918,7 +938,7 @@ class Optimizer:
         # dual constraint 4: corresponds to eta variable in primal
         for intermediary in self.instance.intermediaries:
             model.addConstr(
-                -self.params.epsilons[intermediary.id] * mu[intermediary.id]
+                -self.epsilons[intermediary.id] * mu[intermediary.id]
                 + gp.quicksum(
                     alpha[intermediary.id, hist_set_index, route_set_index]
                     * sum(
@@ -995,7 +1015,7 @@ class Optimizer:
             alpha[intermediary.id, hist_set_index, route_set_index]
             * (
                 route.cost
-                + self.params.het_costs[intermediary.id]
+                + self.het_costs[intermediary.id]
                 - fruit_revenue_by_route[route_set_index]
             )
             for intermediary in self.instance.intermediaries
@@ -1136,7 +1156,7 @@ class Optimizer:
                 # see model for stability cut definition
                 cut_lhs = (
                     route.value
-                    - self.params.het_costs[intermediary.id]
+                    - self.het_costs[intermediary.id]
                     - route_farmer_payments
                     - eta[intermediary.id] * total_quantity_outside_hist_set
                     - kappa[intermediary.id, hist_set_idx]
@@ -1186,7 +1206,7 @@ class Optimizer:
 
         net_prizes = {
             intermediary_id: intermediary_id_to_prize[intermediary_id]
-            - self.params.het_costs[intermediary_id]
+            - self.het_costs[intermediary_id]
             for intermediary_id in intermediary_id_to_prize.keys()
         }
 
@@ -1238,7 +1258,7 @@ class Optimizer:
         max_cost = (
             self.routing_cost_by_truck_count[len(max_intermediary_set[0])] + 
             sum(
-                self.params.het_costs[intermediary_id] 
+                self.het_costs[intermediary_id] 
                 for intermediary_id in max_intermediary_set[0]
             )
         )
@@ -1272,55 +1292,26 @@ class Optimizer:
         hist_set_method: str,
     ) -> None:
         """
-        Processes intermediary historical sets according to the following rules:
-        `union`: unions together the historical sets.
-        `instance_farmers`: gets all participating farmers associated with that intermediary.
-        `all`: both `union` and `instance_farmers`.
-        `original`: no processing (empirical distribution)
+        Sets the active historical sets, which the stability constraints are built
+        against, according to `hist_set_method`. See `domain.hist_sets` for the rules.
 
         Args:
-            hist_set_method (str): describes which method above to use.
+            hist_set_method (str): describes which method to use.
 
         Raises:
             ValueError: `hist_set_method` invalid.
         """
-        if hist_set_method == "union":
-            self.active_hist_sets = {
-                intermediary_id: (
-                    frozenset().union(*hist_sets),
-                )
-                for intermediary_id, hist_sets
-                in self._original_hist_sets.items()
-            }
-        elif hist_set_method == "instance_farmers":
-            self.active_hist_sets = {}
-            for intermediary in self.instance.intermediaries:
-                instance_farmers = frozenset([
-                    f.id for f in self.instance.farmers
-                    if f.intermediary_id == intermediary.id
-                ])
-                self.active_hist_sets[intermediary.id] = (instance_farmers,)
-        elif hist_set_method == "all":
-            self.active_hist_sets = {}
-            for intermediary in self.instance.intermediaries:
-                instance_farmers = frozenset([
-                    f.id for f in self.instance.farmers
-                    if f.intermediary_id == intermediary.id
-                ])
-                hist_farmers = frozenset()
-                for hist_set in self._original_hist_sets[intermediary.id]:
-                    hist_farmers = hist_farmers.union(hist_set) 
-                all = instance_farmers.union(hist_farmers)
-                self.active_hist_sets[intermediary.id] = (all,)
-        elif hist_set_method == "original":
-            self.active_hist_sets = {
-                intermediary_id: hist_sets
-                for intermediary_id, hist_sets in self._original_hist_sets.items()
-            }
-        else:
-            raise ValueError(
-                "allowed hist_set_methods: union, all, instance_farmers, or original."
-            )
+        self.active_hist_sets = configure_hist_sets(self.instance, hist_set_method)
+
+    def _compute_status_quo_quantities(self) -> None:
+        """
+        Sets the expected status-quo quantity of each intermediary, derived from the
+        currently active historical sets. Must be called after `_configure_hist_sets`.
+        """
+        self.status_quo_quantities = status_quo_quantities(
+            self.instance,
+            self.active_hist_sets,
+        )
 
     def _calc_dominance(self) -> list[tuple[str, str]]:
         """Compute pairwise dominance relations between intermediaries.
@@ -1336,24 +1327,12 @@ class Optimizer:
                 entry is a tuple `(int_1, int_2)` with the convention that
                 `int_1` dominates `int_2`.
         """
-        # precompute historical quantities
-        hist_avg_quantities = {}
-        for intermediary in self.instance.intermediaries:
-            hist_sets = self.active_hist_sets[intermediary.id]
-
-            hist_quantity = 0
-            for hist_set in hist_sets:
-                for farmer in self.instance.farmers:
-                    if farmer.id in hist_set:
-                        hist_quantity += farmer.quantity
-
-            hist_avg_quantities[intermediary.id] = hist_quantity / len(hist_sets)
 
         # compare intermediaries
         def _dominates(i, j):
             return (
-                self.params.het_costs[i.id] < self.params.het_costs[j.id]
-                and hist_avg_quantities[i.id] >= hist_avg_quantities[j.id]
+                self.het_costs[i.id] < self.het_costs[j.id]
+                and self.status_quo_quantities[i.id] >= self.status_quo_quantities[j.id]
             )
 
         dominance_relations = []
@@ -1479,7 +1458,7 @@ class Optimizer:
         # sort intermediaries by heterogeneous costs.
         ordered_intermediaries = sorted(
             self.instance.intermediaries, 
-            key=lambda x: self.params.het_costs[x.id], 
+            key=lambda x: self.het_costs[x.id], 
             reverse=False
         )
         # include first min_trucks intermediaries in min_set.
@@ -1504,7 +1483,7 @@ class Optimizer:
         n_trucks = len(intermediary_set)
         vrp_cost = self.routing_cost_by_truck_count[n_trucks]
         het_costs = sum(
-            self.params.het_costs[intermediary_id] for intermediary_id in intermediary_set
+            self.het_costs[intermediary_id] for intermediary_id in intermediary_set
         )
         return vrp_cost + het_costs
 
@@ -1547,3 +1526,9 @@ class Optimizer:
 
             label = field.name.replace("_", " ").title()
             self.output.metric(label, value)
+
+        self.output.subsection("epsilons")
+        self.output.message(
+            pformat(dict(self.epsilons), width=self.output.width, sort_dicts=True, compact=False),
+            indent=1,
+        )

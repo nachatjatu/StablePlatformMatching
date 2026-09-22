@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import copy
 
 from stable_platform_matchings import Optimizer
 from stable_platform_matchings.optimization.options import OptimizerParams, SolverOptions
@@ -130,7 +129,6 @@ def run_one(
     print("Initializing optimizer...")
     params = OptimizerParams(
         het_costs=het_costs,
-        epsilons=epsilons,
         backend="gurobi",
         vrp_mode="approximate",
         vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
@@ -140,12 +138,6 @@ def run_one(
         instance=instance,
         params=params,
     )
-    optimizer_vanilla_no_pay = copy.deepcopy(optimizer)
-    optimizer_vanilla_pay = copy.deepcopy(optimizer)
-    optimizer_structured_no_pay = copy.deepcopy(optimizer)
-    optimizer_structured_pay = copy.deepcopy(optimizer)
-    optimizer_dominance_no_pay = copy.deepcopy(optimizer)
-    optimizer_dominance_pay = copy.deepcopy(optimizer)
 
     # solve
     print("Solving vanilla no pay...")
@@ -159,7 +151,10 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_vanilla_no_pay = optimizer_vanilla_no_pay.solve(vanilla_no_pay_options)
+    summary_vanilla_no_pay = optimizer.solve(
+        vanilla_no_pay_options,
+        epsilons=epsilons,
+    )
 
     print("Solving vanilla pay...")
     vanilla_pay_options = SolverOptions(
@@ -172,7 +167,10 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_vanilla_pay = optimizer_vanilla_pay.solve(vanilla_pay_options)
+    summary_vanilla_pay = optimizer.solve(
+        vanilla_pay_options,
+        epsilons=epsilons,
+    )
 
     print("Solving structured no pay...")
     structured_no_pay_options = SolverOptions(
@@ -184,7 +182,10 @@ def run_one(
         pay_unmatched=False,
         stabilize_final_solution=True
     )
-    summary_structured_no_pay = optimizer_structured_no_pay.solve(structured_no_pay_options)
+    summary_structured_no_pay = optimizer.solve(
+        structured_no_pay_options,
+        epsilons=epsilons,
+    )
 
     print("Solving structured pay...")
     structured_pay_options = SolverOptions(
@@ -197,7 +198,10 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_structured_pay = optimizer_structured_pay.solve(structured_pay_options)
+    summary_structured_pay = optimizer.solve(
+        structured_pay_options,
+        epsilons=epsilons,
+    )
 
     print("Solving dominance no pay...")
     dominance_no_pay_options = SolverOptions(
@@ -210,7 +214,10 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_dominance_no_pay = optimizer_dominance_no_pay.solve(dominance_no_pay_options)
+    summary_dominance_no_pay = optimizer.solve(
+        dominance_no_pay_options,
+        epsilons=epsilons,
+    )
 
     print("Solving dominance pay...")
     dominance_pay_options = SolverOptions(
@@ -223,7 +230,10 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_dominance_pay = optimizer_dominance_pay.solve(dominance_pay_options)
+    summary_dominance_pay = optimizer.solve(
+        dominance_pay_options,
+        epsilons=epsilons,
+    )
 
     return {
         "schema_version": 1,
@@ -240,11 +250,8 @@ def run_one(
             "instance_file": instance_path.name,
             "instance_index": instance_index,
         },
-        "sampled_inputs": {
-            "quantities": quantities,
-            "epsilons": epsilons,
-            "het_costs": het_costs,
-        },
+        # epsilons and het_costs are recorded by the summary itself
+        # (summary.params); farmer quantities by its instance_snapshot.
         "summary_vanilla_no_pay": summary_vanilla_no_pay.return_dict(),
         "summary_vanilla_pay": summary_vanilla_pay.return_dict(),
         "summary_structured_no_pay": summary_structured_no_pay.return_dict(),
@@ -314,13 +321,11 @@ def main() -> None:
 
     save_path = results_path / f"job_{job_id}.json.gz"
 
-    job_payload: dict[str, Any] = {
-        "schema_version": 1,
-        "job_id": job_id,
-        "experiment_metadata": experiment_metadata,
-        "n_runs": 0,
-        "runs": [],
-    }
+    job_payload = utils.JobPayload(
+        schema_version=1,
+        job_id=job_id,
+        experiment_metadata=experiment_metadata,
+    )
 
     for run_index in range(N_RUNS):
         run_payload = run_one(
@@ -332,26 +337,10 @@ def main() -> None:
         )
 
         # format results for correctness
-        safe_run_payload = utils.encode_nonfinite(run_payload)
-        nonfinite_values = utils.find_nonfinite(safe_run_payload)
-        if nonfinite_values:
-            print("Found non-finite values:")
-            for path, value in nonfinite_values:
-                print(f"  {path} = {value!r}")
+        job_payload.add_run(run_payload)
+        job_payload.save(save_path)
 
-            raise ValueError(
-                f"Payload contains {len(nonfinite_values)} non-finite value(s)"
-            )
-
-        # add results to the job payload and save
-        job_payload["runs"].append(safe_run_payload)
-        job_payload["n_runs"] = len(job_payload["runs"])
-        utils.save_json_gz_atomic(
-            payload=job_payload,
-            save_path=save_path,
-        )
-
-        print(f"Saved run {run_index} ({job_payload['n_runs']}/{N_RUNS}) to {save_path}")
+        print(f"Saved run {run_index} ({job_payload.n_runs}/{N_RUNS}) to {save_path}")
 
 
 if __name__ == "__main__":

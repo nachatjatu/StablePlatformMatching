@@ -21,10 +21,13 @@ import stable_platform_matchings.experiments.utils as utils
 BASE_SEED = 20260918
 VRP_TIME_LIMIT_SECONDS = 900
 
-EPSILON_ELL = 0.5
-EPSILON_HS = [0, 1, 2, 3, 4, 5, 6, 7]
-TOP_N = 3
+EPSILON_ELLS = [0]
+TOP_N = [1, 2, 3]
 HIST_SET_METHOD = "instance_farmers"
+EPSILON_H_GROUPS = [
+    [0, 1, 2, 3, 4],
+    [5, 6, 7, 8, 9],
+]
 
 def set_epsilons(
     instance: Instance,
@@ -45,7 +48,7 @@ def set_epsilons(
 def clip_het_costs(
     instance: Instance,
     treatment_ids: set,
-    margin: float = 10000
+    margin: float = 100
 ) -> dict[str, float]:
     """Sample heterogeneous costs for every intermediary."""
     base_het_costs = {
@@ -53,32 +56,16 @@ def clip_het_costs(
         for intermediary in instance.intermediaries
     }
 
-    # get max control sigma; every treated intermediary is clipped above this
+    # get min treatment and max control sigmas
     max_control_sigma = max(
         het_cost for intermediary_id, het_cost in base_het_costs.items()
         if intermediary_id not in treatment_ids
     )
 
-    # Give each treated intermediary its own floor rather than a shared one. A
-    # single shared floor collapses every treated intermediary whose base cost
-    # falls below it onto the identical value, making them interchangeable.
-    # Spreading the floors by rank keeps the design intent (all treated strictly
-    # above all controls, relative order among treated preserved) while leaving
-    # the costs distinct.
-    treated_by_base_cost = sorted(
-        treatment_ids, key=lambda intermediary_id: base_het_costs[intermediary_id]
-    )
-    treated_floor = {
-        intermediary_id: max_control_sigma + margin * (rank + 1)
-        for rank, intermediary_id in enumerate(treated_by_base_cost)
-    }
-
     het_costs = {}
     for intermediary_id in base_het_costs:
         if intermediary_id in treatment_ids:
-            het_costs[intermediary_id] = max(
-                base_het_costs[intermediary_id], treated_floor[intermediary_id]
-            )
+            het_costs[intermediary_id] = max(base_het_costs[intermediary_id], max_control_sigma + margin)
         else:
             het_costs[intermediary_id] = base_het_costs[intermediary_id]
 
@@ -88,13 +75,13 @@ def clip_het_costs(
 def run_one(
     *,
     job_id: int,
-    solver_threads: int,
+    optimizer: Optimizer,
     treatment_ids: set,
     instance: Instance,
     epsilon_ell: float,
     epsilon_h: float,
 ) -> dict[str, Any]:
-        
+
     # set random seeding
     print("Setting random seeding...")
     seed_sequence = np.random.SeedSequence(
@@ -119,25 +106,6 @@ def run_one(
         epsilon_ell=epsilon_ell,
         epsilon_h=epsilon_h,
     )
-    het_costs = clip_het_costs(
-        instance=instance,
-        treatment_ids=treatment_ids,
-    )
-
-    # initialize optimizer
-    print("Initializing optimizer...")
-    params = OptimizerParams(
-        het_costs=het_costs,
-        backend="gurobi",
-        vrp_mode="approximate",
-        vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
-        threads=solver_threads
-    )
-    optimizer = Optimizer(
-        instance=instance,
-        params=params,
-    )
-
     # solve
     print("Solving...")
     options = SolverOptions(
@@ -153,9 +121,11 @@ def run_one(
     summary = optimizer.solve(options, epsilons=epsilons)
 
     # epsilons and het_costs are recorded by the summary itself (summary.params);
-    # epsilon_h/epsilon_ell and treatment_ids are job-level and recorded once there.
+    # epsilon_ell and treatment_ids are job-level and recorded once there. epsilon_h
+    # stays because it varies across the runs within a job.
     return {
         "metadata": {
+            "epsilon_h": epsilon_h,
             "optimizer_seed": optimizer_seed,
             "seed_sequence_state": seed_sequence.state,
             "optimizer_seed_sequence_state": (
@@ -168,7 +138,7 @@ def run_one(
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python experiment.py JOB_ID")
-    
+
     job_id = int(sys.argv[1])
 
     # get data paths
@@ -193,7 +163,7 @@ def main() -> None:
         raise FileNotFoundError(f"No YAML instance files found in {instances_path}")
 
     # make results path
-    results_path = Path("results") / "exp_7" / f"job_{job_id}"
+    results_path = Path("results") / "exp_8" / f"job_{job_id}"
     results_path.mkdir(parents=True, exist_ok=True)
 
     with graph_path.open("rb") as file:
@@ -201,7 +171,7 @@ def main() -> None:
 
     solver_threads = utils.get_solver_threads()
     experiment_metadata = {
-        "experiment": "exp_7",
+        "experiment": "exp_8",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),
@@ -215,32 +185,37 @@ def main() -> None:
         },
     }
 
-    # decode job_id into (replicate, instance, epsilon_h) without clobbering
-    # job_id; one job_id selects exactly one epsilon_h and one instance. job_ids
-    # beyond one full sweep of the grid wrap around and become additional
-    # replicates of each condition.
+    # decode job_id into (replicate, instance, epsilon_ell, epsilon_h group,
+    # top_n) without clobbering job_id; job_ids beyond one full sweep of the
+    # grid wrap around and become additional replicates of each condition.
     if job_id < 0:
         raise SystemExit(f"JOB_ID must be non-negative, got {job_id}")
 
     remainder = job_id
 
-    eps_h_idx = remainder % len(EPSILON_HS)     # innermost, varies fastest
-    remainder //= len(EPSILON_HS)
+    top_n_idx = remainder % len(TOP_N)          # innermost, varies fastest
+    remainder //= len(TOP_N)
+
+    eps_h_group_idx = remainder % len(EPSILON_H_GROUPS)
+    remainder //= len(EPSILON_H_GROUPS)
+
+    eps_ell_idx = remainder % len(EPSILON_ELLS)
+    remainder //= len(EPSILON_ELLS)
 
     instance_idx = remainder % len(instance_paths)
+    remainder //= len(instance_paths)
 
-    epsilon_h = float(EPSILON_HS[eps_h_idx])
-    epsilon_ell = float(EPSILON_ELL)
+    replicate_idx = remainder                   # outermost, varies slowest
 
     # load instance
     print("Loading instance...")
     instance_path = instance_paths[instance_idx]
     instance = Instance.from_yaml(instance_path)
-    
+
     print(f"Loaded instance {instance_path}, setting graph...")
     instance.set_graph(RoadGraph(graph))
 
-    top_n = TOP_N
+    top_n = TOP_N[top_n_idx]
     # Rank by the status quo the stability constraints actually enforce under
     # HIST_SET_METHOD, not by instance.original_status_quo_quantities (which averages
     # the recorded routes and so understates multi-route intermediaries). Ties are
@@ -254,30 +229,55 @@ def main() -> None:
 
     save_path = results_path / f"job_{job_id}.json.gz"
 
+    epsilon_hs = EPSILON_H_GROUPS[eps_h_group_idx]
+
     job_payload = utils.JobPayload(
         experiment_metadata=experiment_metadata,
         instance_file=instance_path.name,
         instance_index=instance_idx,
         top_n=top_n,
         treatment_ids=treatment_ids,
-        epsilon_ell=epsilon_ell,
-        epsilon_h=epsilon_h,
-        epsilon_h_index=eps_h_idx,
+        epsilon_ell=EPSILON_ELLS[eps_ell_idx],
+        epsilon_h_group_index=eps_h_group_idx,
+        epsilon_h_group=epsilon_hs,
+        replicate_index=replicate_idx,
     )
 
-    run_payload = run_one(
-        job_id=job_id,
-        solver_threads=solver_threads,
-        treatment_ids=treatment_ids,
+    epsilon_ell = EPSILON_ELLS[eps_ell_idx]
+
+    # het_costs depend only on treatment_ids, so one Optimizer serves the whole
+    # epsilon_h group: its VRP routing costs are computed once rather than per run.
+    het_costs = clip_het_costs(
         instance=instance,
-        epsilon_ell=epsilon_ell,
-        epsilon_h=epsilon_h,
+        treatment_ids=treatment_ids,
+    )
+    print("Initializing optimizer...")
+    optimizer = Optimizer(
+        instance=instance,
+        params=OptimizerParams(
+            het_costs=het_costs,
+            backend="gurobi",
+            vrp_mode="approximate",
+            vrp_time_limit_seconds=VRP_TIME_LIMIT_SECONDS,
+            threads=solver_threads,
+        ),
     )
 
-    job_payload.add_run(run_payload)
-    job_payload.save(save_path)
+    for epsilon_h in epsilon_hs:
+        run_payload = run_one(
+            job_id=job_id,
+            optimizer=optimizer,
+            treatment_ids=treatment_ids,
+            instance=instance,
+            epsilon_ell=epsilon_ell,
+            epsilon_h=float(epsilon_h),
+        )
 
-    print(f"Saved epsilon_h={epsilon_h} to {save_path}")
+        # save after each run so a timeout keeps the completed ones
+        job_payload.add_run(run_payload)
+        job_payload.save(save_path)
+
+        print(f"Saved epsilon_h={epsilon_h} to {save_path}")
 
 
 if __name__ == "__main__":

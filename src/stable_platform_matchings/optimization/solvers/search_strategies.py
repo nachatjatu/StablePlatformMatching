@@ -4,6 +4,134 @@ from ...reporting.containers import BranchSolution
 from ..branch import Branch
 from .optimizer_protocol import OptimizerProtocol
 
+def solve_npm(
+    optimizer: OptimizerProtocol
+) -> None:
+    def compute_network_priority(intermediary):
+        """NPM(t) := sigma_t / min(K, n_t + eps_t)"""
+        het_costs = optimizer.het_costs
+        sigma = het_costs[intermediary.id]
+        K = intermediary.capacity
+        n = optimizer.status_quo_quantities[intermediary.id]
+        eps = optimizer.epsilons[intermediary.id]
+        return sigma / min(K, max(n + eps, float(1e-4)))
+
+    # order intermediaries in increasing order of e_t := sigma_t / min(K, n_t + eps_t)
+    network_priorities = [
+        (intermediary.id, compute_network_priority(intermediary))
+        for intermediary in optimizer.instance.intermediaries
+    ]
+    optimizer.output.section("Network Priority Order")
+    optimizer.output.collection(
+        label="Network Priorities (sorted)", 
+        values=sorted(network_priorities, key = lambda x: x[1])
+    )
+    network_priority_order = [item[0] for item in sorted(network_priorities, key=lambda x: x[1])]
+
+    # initialize solver
+    P = set()
+    pricing_cache = {}
+    U_0, C_0 = float("inf"), float("inf")
+    for k in range(len(network_priority_order) + 1):
+        if k > 0:
+            P = P.union({network_priority_order[k - 1]})
+
+        # get forced min. cost. matching
+        branch = Branch(
+            forced_match = P,
+            forced_unmatch = set()
+        )
+        if not optimizer.initialize_branch(branch):
+            break
+
+        # special: initialize U_0 at the root
+        if k == 0:
+            forced_ub_result = optimizer.solve_primal_for_branch(
+                branch=branch,
+                sol_type="forced_upper_bound",
+                compute_intermediary_welfare=False,
+                compute_farmer_welfare=False
+            )
+            U_0 = forced_ub_result.platform_profit
+            C_0 = branch.min_cost
+
+            optimizer.instance_summary.forced_upper_bound = U_0
+            optimizer.best_ub = U_0
+
+        # check stopping condition
+        # note that U_0 = R - C_0 - phi_free -> -phi_free = U_0 - R + C_0
+        # and thus U_k = R - C_k - phi_free = R - C_k + U_0 - R + C_0 = U_0 - (C_k - C_0).
+        U_k = U_0 - (branch.min_cost - C_0)
+
+        optimizer.output.subsection(f"Checking Upper Bound (k={k})")
+        optimizer.output.metric(f"U_{k}", U_k)
+        if not optimizer.exceeds_global_lb(U_k, optimizer.BRANCH_PRUNE_TOL):
+            optimizer.output.status(
+                "U_k cannot improve on the incumbent; stopping network-prioritized search."
+            )
+            break
+
+        # if y^k is not in pricing cache, then solve and cache value & optimizer
+        if branch.min_cost_set in pricing_cache:
+            optimizer.output.subsection(f"Solved pricing for P_{k}")
+            optimizer.output.metric("Objective", pricing_cache[branch.min_cost_set])
+            optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
+            continue
+
+        forced_lb_result = optimizer.solve_primal_for_branch(
+            branch=branch,
+            sol_type="forced_lower_bound",
+            compute_intermediary_welfare=False,
+            compute_farmer_welfare=False,
+        )
+        branch_profit = forced_lb_result.platform_profit
+        pricing_cache[branch.min_cost_set] = branch_profit
+
+        # the k=0 candidate is the efficient-matching heuristic, i.e. Pi^eff in (25)
+        if k == 0:
+            optimizer.instance_summary.forced_lower_bound = branch_profit
+
+        optimizer.output.subsection(f"Lower Bound Candidate")
+        optimizer.output.metric("Objective", forced_lb_result.platform_profit)
+        optimizer.output.collection("Minimum-cost set", sorted(branch.min_cost_set))
+
+        # update global lower bound if forced lower bound is tighter (found a better feasible sol'n)
+        if optimizer.exceeds_global_lb(
+            forced_lb_result.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL
+        ):
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
+            optimizer.best_lb = forced_lb_result.platform_profit
+            optimizer.best_lb_set = branch.min_cost_set
+            optimizer.best_lb_result = forced_lb_result
+
+            optimizer.record_summary()
+
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Improved the global lower bound",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill=".",
+            )
+
+    previous_lb = optimizer.best_lb
+    previous_ub = optimizer.best_ub
+
+    optimizer.record_summary()
+
+    print_bound_update(
+        optimizer,
+        title="Search Complete",
+        status="",
+        previous_lb=previous_lb,
+        previous_ub=previous_ub,
+        fill="=",
+    )
+
+
 
 def solve_heuristic(
     optimizer: OptimizerProtocol, 
@@ -105,20 +233,6 @@ def solve_heuristic(
             )
 
             break
-
-        # print summary of branches in queue
-        queue_summary = [
-            {
-                "matched": sorted(branch_solution.branch.forced_match),
-                "unmatched": sorted(branch_solution.branch.forced_unmatch),
-                "upper_bound": branch_solution.upper_bound,
-                "can_improve": optimizer.exceeds_global_lb(
-                    branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL
-                ),
-            }
-            for branch_solution in active_branches
-        ]
-        optimizer.output.collection("Branch summaries", queue_summary)
 
         # choose max branch using max intermediary profit criterion
         max_branch = max(
@@ -441,21 +555,6 @@ def solve_exact(
             )
             break
 
-        # print summary of remaining branches in queue
-        queue_summary = [
-            {
-                "matched": sorted(branch_solution.branch.forced_match),
-                "unmatched": sorted(branch_solution.branch.forced_unmatch),
-                "upper_bound": branch_solution.upper_bound,
-                "can_improve": optimizer.exceeds_global_lb(
-                    branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL
-                ),
-            }
-            for branch_solution in active_branches
-        ]
-
-        optimizer.output.collection("Branch summaries", queue_summary)
-
         # prune branches whose upper bound cannot exceed global lower bound
         active_branches = [
             branch_solution for branch_solution in active_branches
@@ -664,7 +763,7 @@ def solve_branch_exact(
 
     if not can_improve:
         optimizer.output.message(
-            "Reason: branch upper bound cannot improve on the global lower bound.",
+            "Reason: branch lower bound cannot improve on the global lower bound.",
             indent=1,
         )
         return BranchSolution(status="stop", branch=branch)
