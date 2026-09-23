@@ -221,8 +221,12 @@ class Optimizer:
             solve_heuristic(self, heuristic_accelerated=False)
         elif self.options.strategy == "heuristic_accelerated":
             solve_heuristic(self, heuristic_accelerated=True)
-        elif self.options.strategy == "network_prioritized":
-            solve_npm(self)
+        elif self.options.strategy == "network_prioritized_capped":
+            solve_npm(self, capped=True)
+        elif self.options.strategy == "network_prioritized_uncapped":
+            solve_npm(self, capped=False)
+        else:
+            raise ValueError("Unknown search strategy - check if supported!")
 
         # raise error if optimization fails to find a solution
         if self.best_lb_result is None or self.best_lb_set is None:

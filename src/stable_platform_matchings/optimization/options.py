@@ -7,7 +7,10 @@ from ..domain.instance import Instance
 
 Backend = Literal["gurobi"]
 VRPMode = Literal["exact", "approximate"]
-SolverStrategy = Literal["exact", "heuristic_accelerated", "heuristic_vanilla", "network_prioritized"]
+SolverStrategy = Literal[
+    "exact", "heuristic_accelerated", "heuristic_vanilla", 
+    "network_prioritized_capped", "network_prioritized_uncapped"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +134,9 @@ class SolverOptions:
         if type(self.strategy) is not str:
             raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")
 
-        if self.strategy not in {"exact", "heuristic_accelerated", "heuristic_vanilla", "network_prioritized"}:
+        if self.strategy not in {
+            "exact", "heuristic_accelerated", "heuristic_vanilla", 
+            "network_prioritized_capped", "network_prioritized_uncapped"}:
             raise ValueError(f"Unsupported strategy: {self.strategy}")
 
         for name in (

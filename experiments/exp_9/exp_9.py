@@ -142,36 +142,9 @@ def run_one(
         params=params,
     )
 
-    # solve
-    print("Solving with exact solver...")
-    options_exact = SolverOptions(
-        strategy="exact",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop_threshold=1e-4,
-        hist_set_method="instance_farmers",
-        pay_unmatched=False,
-        seed=optimizer_seed,
-        stabilize_final_solution=True
-    )
-    summary_exact = optimizer.solve(options_exact, epsilons=epsilons)
-
-    print("Solving with accelerated heuristic...")
-    options_heuristic = SolverOptions(
-        strategy="heuristic_accelerated",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop_threshold=1e-4,
-        hist_set_method="instance_farmers",
-        pay_unmatched=False,
-        seed=optimizer_seed,
-        stabilize_final_solution=True
-    )
-    summary_heuristic = optimizer.solve(options_heuristic, epsilons=epsilons)
-
     print("Solving with network-prioritized matching...")
     options_npm = SolverOptions(
-        strategy="network_prioritized_capped",
+        strategy="network_prioritized_uncapped",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=1e-4,
@@ -199,8 +172,6 @@ def run_one(
         },
         # epsilons and het_costs are recorded by the summary itself
         # (summary.params); farmer quantities by its instance_snapshot.
-        "summary_exact": summary_exact.return_dict(),
-        "summary_heuristic": summary_heuristic.return_dict(),
         "summary_npm": summary_npm.return_dict()
     }
 
@@ -232,7 +203,7 @@ def main() -> None:
         raise FileNotFoundError(f"No YAML instance files found in {instances_path}")
 
     # make results path
-    results_path = Path("results") / "exp_8" / f"job_{job_id}"
+    results_path = Path("results") / "exp_9" / f"job_{job_id}"
     results_path.mkdir(parents=True, exist_ok=True)
 
     with graph_path.open("rb") as file:
@@ -241,7 +212,7 @@ def main() -> None:
     solver_threads = utils.get_solver_threads()
 
     experiment_metadata = {
-        "experiment": "exp_8",
+        "experiment": "exp_9",
         "base_seed": BASE_SEED,
         "job_id": job_id,
         "python_version": platform.python_version(),

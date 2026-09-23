@@ -5,28 +5,36 @@ from ..branch import Branch
 from .optimizer_protocol import OptimizerProtocol
 
 def solve_npm(
-    optimizer: OptimizerProtocol
+    optimizer: OptimizerProtocol,
+    capped
 ) -> None:
-    def compute_network_priority(intermediary):
+    def compute_network_priority(intermediary, capped):
         """NPM(t) := sigma_t / min(K, n_t + eps_t)"""
         het_costs = optimizer.het_costs
         sigma = het_costs[intermediary.id]
         K = intermediary.capacity
         n = optimizer.status_quo_quantities[intermediary.id]
         eps = optimizer.epsilons[intermediary.id]
-        return sigma / min(K, max(n + eps, float(1e-4)))
+        denom = min(K, max(n + eps, float(1e-4))) if capped else max(n + eps, float(1e-4))
+        return sigma / denom
 
-    # order intermediaries in increasing order of e_t := sigma_t / min(K, n_t + eps_t)
+    # order intermediaries in increasing order of e_t := sigma_t / min(K, n_t + eps_t),
+    # breaking ties by decreasing epsilon
     network_priorities = [
-        (intermediary.id, compute_network_priority(intermediary))
+        (
+            intermediary.id,
+            compute_network_priority(intermediary, capped),
+            optimizer.epsilons[intermediary.id],
+        )
         for intermediary in optimizer.instance.intermediaries
     ]
+    sort_key = lambda x: (x[1], -x[2])
     optimizer.output.section("Network Priority Order")
     optimizer.output.collection(
-        label="Network Priorities (sorted)", 
-        values=sorted(network_priorities, key = lambda x: x[1])
+        label="Network Priorities (sorted)",
+        values=sorted(network_priorities, key=sort_key)
     )
-    network_priority_order = [item[0] for item in sorted(network_priorities, key=lambda x: x[1])]
+    network_priority_order = [item[0] for item in sorted(network_priorities, key=sort_key)]
 
     # initialize solver
     P = set()

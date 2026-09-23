@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=exp_8
+#SBATCH --job-name=exp_9
 #SBATCH --array=0-195%40
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
-#SBATCH --output=logs/exp_8/out/%x_%A_%a.out
-#SBATCH --error=logs/exp_8/err/%x_%A_%a.err
+#SBATCH --output=logs/exp_9/out/%x_%A_%a.out
+#SBATCH --error=logs/exp_9/err/%x_%A_%a.err
 
 source .venv/bin/activate
 
@@ -35,4 +35,4 @@ export GUROBI_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run experiment for this array index
-python3 experiments/exp_8/exp_8.py $SLURM_ARRAY_TASK_ID
+python3 experiments/exp_9/exp_9.py $SLURM_ARRAY_TASK_ID
