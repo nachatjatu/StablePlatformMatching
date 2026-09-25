@@ -21,7 +21,9 @@ from .branch import Branch
 from .options import OptimizerParams, SolverOptions, validate_epsilons
 from .solvers.dynamic_solvers import DynamicTSPSolver
 from .solvers.lp_solvers import GurobiVRPSolver
-from .solvers.search_strategies import solve_exact, solve_heuristic, solve_npm
+from .solvers.search_strategies import (
+    solve_enumeration, solve_lagrangian_bnp, solve_npm, solve_paper_bnb
+)
 
 IntermediaryId = str
 FarmerId = str
@@ -30,12 +32,14 @@ RouteKey = frozenset[FarmerId]
 
 
 class Optimizer:
-    """Main optimization engine implementing branch-and-price for the
-    platform model.
+    """Main optimization engine for the platform model.
 
     The optimizer maintains a catalogue of intermediary sets, solves primal and dual
-    LPs, and handles branching decisions.  It exposes ``solve`` methods for
-    heuristic and exact modes.
+    LPs, and handles branching decisions. ``solve`` dispatches to a search strategy:
+    the paper's branch-and-bound (``paper_bnb``, ``paper_bnb_random``), the
+    Lagrangian branch-and-price benchmark (``lagrangian_bnp``), the
+    network-prioritized heuristic (``npm_capped``, ``npm_uncapped``), or
+    ``enumeration``.
     """
 
     BRANCH_PRUNE_TOL = 1.0
@@ -186,7 +190,7 @@ class Optimizer:
         self.intermediary_set_to_cost = self._initial_intermediary_set_to_cost.copy()
         self.route_by_farmer_ids_set = {}
 
-        # reset solver state
+        # reset solver state 
         self.best_lb, self.best_ub = -float("inf"), float("inf")
         self.best_lb_result = None
         self.best_lb_set = None
@@ -215,16 +219,18 @@ class Optimizer:
         self.output.metric("Intermediaries", self.n_intermediaries, precision=0)
 
         # solve using specified search strategy
-        if self.options.strategy == "exact":
-            solve_exact(self)
-        elif self.options.strategy == "heuristic_vanilla":
-            solve_heuristic(self, heuristic_accelerated=False)
-        elif self.options.strategy == "heuristic_accelerated":
-            solve_heuristic(self, heuristic_accelerated=True)
-        elif self.options.strategy == "network_prioritized_capped":
+        if self.options.strategy == "lagrangian_bnp":
+            solve_lagrangian_bnp(self)
+        elif self.options.strategy == "paper_bnb_random":
+            solve_paper_bnb(self, max_violation_branching=False)
+        elif self.options.strategy == "paper_bnb":
+            solve_paper_bnb(self, max_violation_branching=True)
+        elif self.options.strategy == "npm_capped":
             solve_npm(self, capped=True)
-        elif self.options.strategy == "network_prioritized_uncapped":
+        elif self.options.strategy == "npm_uncapped":
             solve_npm(self, capped=False)
+        elif self.options.strategy == "enumeration":
+            solve_enumeration(self)
         else:
             raise ValueError("Unknown search strategy - check if supported!")
 
@@ -1167,9 +1173,32 @@ class Optimizer:
                 )
                 model.addConstr(cut_lhs <= 0)
 
+    def intermediary_set_cost(self, intermediary_set: frozenset[str]) -> float | None:
+        """Compute the transportation cost of matching exactly a given set.
+
+        Uses the same cost model as the matching oracle: the routing cost for
+        |intermediary_set| trucks plus the fixed costs of the selected
+        intermediaries. Does not count as an oracle call.
+
+        Args:
+            intermediary_set (frozenset[str]): the intermediaries to match.
+
+        Returns:
+            float | None: the set's cost, or None if no routing cost exists for
+                that many trucks (i.e. the oracle would reject the set).
+        """
+        self._ensure_routing_costs_up_to(len(intermediary_set))
+        routing_cost = self.routing_cost_by_truck_count.get(len(intermediary_set))
+        if routing_cost is None:
+            return None
+
+        return routing_cost + sum(
+            self.het_costs[intermediary_id] for intermediary_id in intermediary_set
+        )
+
     def _get_best_intermediary_set(
-        self, 
-        intermediary_id_to_prize: dict[str, float], 
+        self,
+        intermediary_id_to_prize: dict[str, float],
         branch: Branch
     ) -> tuple[frozenset[str], float, float] | None:
         """Compute the best intermediary set given prize values and branch.

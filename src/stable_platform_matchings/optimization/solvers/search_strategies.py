@@ -1,3 +1,5 @@
+from itertools import combinations
+
 import numpy as np
 
 from ...reporting.containers import BranchSolution
@@ -9,9 +11,9 @@ def solve_npm(
     capped
 ) -> None:
     def compute_network_priority(intermediary, capped):
-        """NPM(t) := sigma_t / min(K, n_t + eps_t)"""
-        het_costs = optimizer.het_costs
-        sigma = het_costs[intermediary.id]
+        """NPM(t) := sigma_t / min(K, n_t + eps_t), where sigma_t is t's total fixed cost
+        (the common truck fixed cost plus t's heterogeneous cost)."""
+        sigma = optimizer.instance.truck_fixed_cost + optimizer.het_costs[intermediary.id]
         K = intermediary.capacity
         n = optimizer.status_quo_quantities[intermediary.id]
         eps = optimizer.epsilons[intermediary.id]
@@ -140,18 +142,166 @@ def solve_npm(
     )
 
 
+# 2^20 candidate sets is already ~1M pricing solves; beyond this enumeration is hopeless
+MAX_ENUMERATION_INTERMEDIARIES = 20
 
-def solve_heuristic(
-    optimizer: OptimizerProtocol, 
-    heuristic_accelerated: bool,
+
+def solve_enumeration(
+    optimizer: OptimizerProtocol
 ) -> None:
     """
-    Conducts one solve using the heuristic strategy, with various acceleration options
-    as specified in optimizer.options.
+    Conducts one exact solve by enumerating matched sets.
+
+    Each candidate set S is evaluated by fixing the matching to exactly S and optimizing
+    payments, i.e. the pricing problem the other strategies solve at a fully determined
+    node. Candidates are visited in increasing order of transportation cost C(S), and the
+    search stops once no remaining candidate can beat the incumbent, using the same bound
+    as the network-prioritized heuristic: U(S) = U_0 - (C(S) - C_0), where U_0 is the
+    root unrestricted-payment bound and C_0 the minimum cost. Because U(S) only decreases
+    along the ordering, the first candidate that cannot improve on the incumbent certifies
+    every later one. Unlike branch-and-price, this never relies on the LP relaxation, so it
+    is unaffected by fractional master solutions.
+
+    Args:
+        optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`.
+
+    Raises:
+        ValueError: too many intermediaries to enumerate.
+        RuntimeError: no feasible intermediary set exists.
+    """
+    if optimizer.n_intermediaries > MAX_ENUMERATION_INTERMEDIARIES:
+        raise ValueError(
+            f"Enumeration supports at most {MAX_ENUMERATION_INTERMEDIARIES} intermediaries, "
+            f"got {optimizer.n_intermediaries}."
+        )
+
+    # compute the minimum-cost set and the unrestricted-payment bound U_0 at the root
+    root_branch = Branch(set(), set())
+    if not optimizer.initialize_branch(root_branch):
+        raise RuntimeError("No feasible intermediary set exists.")
+
+    forced_ub_result = optimizer.solve_primal_for_branch(
+        branch=root_branch,
+        sol_type="forced_upper_bound",
+        compute_intermediary_welfare=False,
+        compute_farmer_welfare=False
+    )
+    U_0 = forced_ub_result.platform_profit
+    C_0 = root_branch.min_cost
+
+    optimizer.instance_summary.forced_upper_bound = U_0
+    optimizer.best_ub = U_0
+
+    # rank every set the matching oracle would accept by transportation cost, breaking
+    # ties deterministically by the sorted member IDs
+    intermediary_ids = sorted(optimizer.intermediary_ids)
+    candidates = []
+    for size in range(1, len(intermediary_ids) + 1):
+        for members in combinations(intermediary_ids, size):
+            cost = optimizer.intermediary_set_cost(frozenset(members))
+            if cost is not None:
+                candidates.append((cost, members))
+    candidates.sort()
+
+    optimizer.output.section("Enumeration")
+    optimizer.output.metric("Candidate sets", len(candidates), precision=0)
+    optimizer.output.metric("Root upper bound U_0", U_0)
+
+    n_evaluated = 0
+    stop_bound = None
+    for cost, members in candidates:
+        # every remaining candidate has cost >= this one, hence bound <= U
+        U = U_0 - (cost - C_0)
+        if (
+            not optimizer.exceeds_global_lb(U, optimizer.BRANCH_PRUNE_TOL)
+            or relative_gap(optimizer.best_lb, U) <= optimizer.options.early_stop_threshold
+        ):
+            stop_bound = U
+            break
+
+        branch = Branch(
+            forced_match=set(members),
+            forced_unmatch=set(intermediary_ids) - set(members)
+        )
+        if not optimizer.initialize_branch(branch):
+            continue
+
+        result = optimizer.solve_primal_for_branch(
+            branch=branch,
+            sol_type="forced_lower_bound",
+            compute_intermediary_welfare=False,
+            compute_farmer_welfare=False
+        )
+        n_evaluated += 1
+
+        # the minimum-cost set is the efficient-matching heuristic's candidate
+        if branch.min_cost_set == root_branch.min_cost_set:
+            optimizer.instance_summary.forced_lower_bound = result.platform_profit
+
+        optimizer.output.subsection(f"Candidate {n_evaluated}")
+        optimizer.output.metric("Upper bound U(S)", U)
+        optimizer.output.metric("Objective", result.platform_profit)
+
+        # update global lower bound if this set beats the incumbent
+        if optimizer.exceeds_global_lb(result.platform_profit, optimizer.GLOBAL_LB_UPDATE_TOL):
+            previous_lb = optimizer.best_lb
+            previous_ub = optimizer.best_ub
+
+            optimizer.best_lb = result.platform_profit
+            optimizer.best_lb_set = branch.min_cost_set
+            optimizer.best_lb_result = result
+
+            optimizer.record_summary()
+
+            print_bound_update(
+                optimizer,
+                title="Global Bound Update",
+                status="Improved the global lower bound",
+                previous_lb=previous_lb,
+                previous_ub=previous_ub,
+                fill=".",
+            )
+
+    previous_lb = optimizer.best_lb
+    previous_ub = optimizer.best_ub
+
+    # evaluated sets cannot exceed the incumbent; unvisited sets are bounded by stop_bound
+    if stop_bound is None:
+        optimizer.best_ub = optimizer.best_lb
+        status = "All candidate sets evaluated"
+    else:
+        optimizer.best_ub = min(optimizer.best_ub, max(optimizer.best_lb, stop_bound))
+        status = "Remaining candidate sets cannot improve on the incumbent"
+
+    optimizer.record_summary()
+
+    optimizer.output.metric("Candidate sets evaluated", n_evaluated, precision=0)
+    print_bound_update(
+        optimizer,
+        title="Search Complete",
+        status=status,
+        previous_lb=previous_lb,
+        previous_ub=previous_ub,
+        fill="=",
+    )
+
+    if optimizer.best_lb_result is None:
+        raise RuntimeError("No primal solution has been found.")
+
+
+def solve_paper_bnb(
+    optimizer: OptimizerProtocol, 
+    max_violation_branching: bool,
+) -> None:
+    """
+    Conducts one solve using the paper's branch-and-bound algorithm (§3.2): one
+    matching-oracle call per node, bounds from the relaxed and forced primal solves,
+    and branching on the no-payment constraints for unmatched intermediaries.
 
     Args:
         optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
-        heuristic_accelerated (bool): whether to use the optimized heuristic or not.
+        max_violation_branching (bool): branch on the largest no-payment violation if
+            True, otherwise on a random violating intermediary.
 
     Raises:
         RuntimeError: no primal solution found.
@@ -165,20 +315,23 @@ def solve_heuristic(
     while True:
         # solve each branch to be evaluated; add to active queue as needed
         for branch in branches_to_evaluate:
-            branch_solution = solve_branch_heuristic(
+            branch_solution = solve_branch_paper_bnb(
                 optimizer=optimizer, 
                 branch=branch, 
-                heuristic_accelerated=heuristic_accelerated, 
+                max_violation_branching=max_violation_branching, 
             )
             if branch_solution.status in ["stop", "infeasible"]:
                 continue
             elif branch_solution.status in ["active"]:
                 active_branches.append(branch_solution)
 
-        # terminate if no more active branches
+        # terminate if no more active branches; every remaining node has been resolved
+        # (pruned or closed with no candidate left), so the incumbent is proven optimal
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
+
+            optimizer.best_ub = optimizer.best_lb
 
             optimizer.record_summary()
 
@@ -200,12 +353,12 @@ def solve_heuristic(
 
         # terminate if optimality gap is small enough
         if (
-            relative_gap(optimizer.best_lb, optimizer.best_ub) 
+            relative_gap(optimizer.best_lb, optimizer.best_ub)
             <= optimizer.options.early_stop_threshold
         ):
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
-            
+
             optimizer.record_summary()
 
             print_bound_update(
@@ -224,10 +377,13 @@ def solve_heuristic(
             if optimizer.exceeds_global_lb(branch_solution.upper_bound, optimizer.BRANCH_PRUNE_TOL)
         ]
 
-        # terminate if no more active branches
+        # terminate if no more active branches; every remaining node has been resolved
+        # (pruned or closed with no candidate left), so the incumbent is proven optimal
         if not active_branches:
             previous_lb = optimizer.best_lb
             previous_ub = optimizer.best_ub
+
+            optimizer.best_ub = optimizer.best_lb
 
             optimizer.record_summary()
 
@@ -306,18 +462,19 @@ def solve_heuristic(
         raise RuntimeError("No primal solution has been found.")
 
 
-def solve_branch_heuristic(
+def solve_branch_paper_bnb(
     optimizer: OptimizerProtocol, 
     branch: Branch, 
-    heuristic_accelerated: bool, 
+    max_violation_branching: bool, 
 ) -> BranchSolution:
     """
-    Evaluate one branch in the solve using the heuristic search strategy.
+    Evaluate one branch in the solve using the branch-and-bound search strategy.
 
     Args:
         optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
         branch (Branch): the branch to be evaluated.
-        heuristic_accelerated (bool): whether to use the optimized heuristic or not.
+        max_violation_branching (bool): branch on the largest no-payment violation if
+            True, otherwise on a random violating intermediary.
 
     Raises:
         RuntimeError: RNG not initialized.
@@ -452,7 +609,7 @@ def solve_branch_heuristic(
 
         # guide using intermediary profits from max farmer welfare solution if using guided
         # option, otherwise sample randomly for positive profit intermediaries.
-        if heuristic_accelerated:
+        if max_violation_branching:
             intermediary_profits = max_farmer_welfare_int_profits
         else:
             intermediary_profits = {
@@ -487,12 +644,14 @@ def solve_branch_heuristic(
         )
 
 
-def solve_exact(
+def solve_lagrangian_bnp(
     optimizer: OptimizerProtocol
 ) -> None:
 
     """
-    Conducts one solve using the full exact branch-and-price strategy.
+    Conducts one solve using the Lagrangian branch-and-price benchmark: at each node,
+    the coupling no-payment constraints are priced via column generation over
+    intermediary sets, and branching is on fractional matching probabilities.
 
     Args:
         optimizer (OptimizerProtocol): the optimizer object, see `optimizer.py`. 
@@ -509,7 +668,7 @@ def solve_exact(
     while True:
         # solve each branch to be evaluated; add to active queue as needed
         for branch in branches_to_evaluate:
-            branch_solution = solve_branch_exact(
+            branch_solution = solve_branch_lagrangian_bnp(
                 optimizer=optimizer, 
                 branch=branch
             )
@@ -650,11 +809,11 @@ def solve_exact(
         raise RuntimeError("No primal solution has been found.")
 
 
-def solve_branch_exact(
+def solve_branch_lagrangian_bnp(
     optimizer: OptimizerProtocol, 
     branch: Branch
 ) -> BranchSolution:
-    """Perform an exact branch-and-price iteration on a given branch.
+    """Perform a Lagrangian branch-and-price iteration on a given branch.
 
     Args:
         branch (Branch): Branching restrictions to apply (fixed matches/unmatches).
@@ -771,7 +930,7 @@ def solve_branch_exact(
 
     if not can_improve:
         optimizer.output.message(
-            "Reason: branch lower bound cannot improve on the global lower bound.",
+            "Reason: branch LP relaxation bound cannot improve on the global lower bound.",
             indent=1,
         )
         return BranchSolution(status="stop", branch=branch)

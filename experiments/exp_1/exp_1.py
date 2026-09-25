@@ -145,7 +145,7 @@ def run_one(
     # solve
     print("Solving no pay...")
     options_no_pay = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=0.0,
@@ -158,7 +158,7 @@ def run_one(
 
     print("Solving pay...")
     options_pay = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),

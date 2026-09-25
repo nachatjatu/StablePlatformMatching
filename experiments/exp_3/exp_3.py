@@ -86,7 +86,7 @@ def run_one(
     # solve
     print("Solving...")
     options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=0.0,

@@ -44,6 +44,8 @@ class OptimizerProtocol(Protocol):
 
     def initialize_branch(self, branch: Branch) -> bool: ...
 
+    def intermediary_set_cost(self, intermediary_set: frozenset[str]) -> float | None: ...
+
     def solve_primal_for_branch(
         self,
         branch: Branch,

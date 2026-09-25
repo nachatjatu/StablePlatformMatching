@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from numbers import Real
 from typing import Literal, Mapping
@@ -8,9 +9,22 @@ from ..domain.instance import Instance
 Backend = Literal["gurobi"]
 VRPMode = Literal["exact", "approximate"]
 SolverStrategy = Literal[
-    "exact", "heuristic_accelerated", "heuristic_vanilla", 
-    "network_prioritized_capped", "network_prioritized_uncapped"
+    "paper_bnb", "paper_bnb_random", "lagrangian_bnp",
+    "npm_capped", "npm_uncapped", "enumeration"
 ]
+SOLVER_STRATEGIES = frozenset({
+    "paper_bnb", "paper_bnb_random", "lagrangian_bnp",
+    "npm_capped", "npm_uncapped", "enumeration"
+})
+
+# deprecated strategy names, kept so that older scripts keep running
+DEPRECATED_STRATEGY_ALIASES = {
+    "heuristic_accelerated": "paper_bnb",
+    "heuristic_vanilla": "paper_bnb_random",
+    "exact": "lagrangian_bnp",
+    "network_prioritized_capped": "npm_capped",
+    "network_prioritized_uncapped": "npm_uncapped",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +133,7 @@ def validate_epsilons(
 @dataclass(frozen=True, slots=True)
 class SolverOptions:
     seed: int = 0
-    strategy: SolverStrategy = "heuristic_accelerated"
+    strategy: SolverStrategy = "paper_bnb"
     structured_farmer_payments: bool = False
     dominance_constraints: bool = False
     early_stop_threshold: float = float("inf")
@@ -134,9 +148,16 @@ class SolverOptions:
         if type(self.strategy) is not str:
             raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")
 
-        if self.strategy not in {
-            "exact", "heuristic_accelerated", "heuristic_vanilla", 
-            "network_prioritized_capped", "network_prioritized_uncapped"}:
+        if self.strategy in DEPRECATED_STRATEGY_ALIASES:
+            new_strategy = DEPRECATED_STRATEGY_ALIASES[self.strategy]
+            warnings.warn(
+                f"strategy {self.strategy!r} is deprecated; use {new_strategy!r}",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            object.__setattr__(self, "strategy", new_strategy)
+
+        if self.strategy not in SOLVER_STRATEGIES:
             raise ValueError(f"Unsupported strategy: {self.strategy}")
 
         for name in (

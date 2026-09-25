@@ -142,7 +142,7 @@ def run_one(
     # solve
     print("Solving vanilla no pay...")
     vanilla_no_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),
@@ -158,7 +158,7 @@ def run_one(
 
     print("Solving vanilla pay...")
     vanilla_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),
@@ -174,7 +174,7 @@ def run_one(
 
     print("Solving structured no pay...")
     structured_no_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=True,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),
@@ -189,7 +189,7 @@ def run_one(
 
     print("Solving structured pay...")
     structured_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=True,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),
@@ -205,7 +205,7 @@ def run_one(
 
     print("Solving dominance no pay...")
     dominance_no_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=True,
         early_stop_threshold=float(1e-4),
@@ -221,7 +221,7 @@ def run_one(
 
     print("Solving dominance pay...")
     dominance_pay_options = SolverOptions(
-        strategy="heuristic_accelerated",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=True,
         early_stop_threshold=0.0,

@@ -16,7 +16,7 @@ import stable_platform_matchings.experiments.utils as utils
 
 
 N_RUNS = 10
-BASE_SEED = 20260806
+BASE_SEED = 20260924
 MIN_QUANTITY = 0.1
 MAX_QUANTITY = 9.0
 MAX_PERTURB = 0.5
@@ -143,9 +143,9 @@ def run_one(
     )
 
     # solve
-    print("Solving with exact solver...")
-    options_exact = SolverOptions(
-        strategy="exact",
+    print("Solving with branch-and-bound...")
+    options_bnb = SolverOptions(
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=1e-4,
@@ -154,24 +154,11 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
     )
-    summary_exact = optimizer.solve(options_exact, epsilons=epsilons)
+    summary_bnb = optimizer.solve(options_bnb, epsilons=epsilons)
 
-    print("Solving with accelerated heuristic...")
-    options_heuristic = SolverOptions(
-        strategy="heuristic_accelerated",
-        structured_farmer_payments=False,
-        dominance_constraints=False,
-        early_stop_threshold=1e-4,
-        hist_set_method="instance_farmers",
-        pay_unmatched=False,
-        seed=optimizer_seed,
-        stabilize_final_solution=True
-    )
-    summary_heuristic = optimizer.solve(options_heuristic, epsilons=epsilons)
-
-    print("Solving with network-prioritized matching...")
-    options_npm = SolverOptions(
-        strategy="network_prioritized_capped",
+    print("Solving with capped network-prioritized matching...")
+    options_npm_capped = SolverOptions(
+        strategy="npm_capped",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=1e-4,
@@ -180,7 +167,20 @@ def run_one(
         seed=optimizer_seed,
         stabilize_final_solution=True
         )
-    summary_npm = optimizer.solve(options_npm, epsilons=epsilons)
+    summary_npm_capped = optimizer.solve(options_npm_capped, epsilons=epsilons)
+
+    print("Solving with uncapped network-prioritized matching...")
+    options_npm_uncapped = SolverOptions(
+        strategy="npm_uncapped",
+        structured_farmer_payments=False,
+        dominance_constraints=False,
+        early_stop_threshold=1e-4,
+        hist_set_method="instance_farmers",
+        pay_unmatched=False,
+        seed=optimizer_seed,
+        stabilize_final_solution=True
+        )
+    summary_npm_uncapped = optimizer.solve(options_npm_uncapped, epsilons=epsilons)
 
     return {
         "schema_version": 1,
@@ -199,9 +199,9 @@ def run_one(
         },
         # epsilons and het_costs are recorded by the summary itself
         # (summary.params); farmer quantities by its instance_snapshot.
-        "summary_exact": summary_exact.return_dict(),
-        "summary_heuristic": summary_heuristic.return_dict(),
-        "summary_npm": summary_npm.return_dict()
+        "summary_bnb": summary_bnb.return_dict(),
+        "summary_npm_capped": summary_npm_capped.return_dict(),
+        "summary_npm_uncapped": summary_npm_uncapped.return_dict()
     }
 
 def main() -> None:
