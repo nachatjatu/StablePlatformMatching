@@ -110,7 +110,6 @@ def run_one(
         )[0]
     )
 
-
     # sample inputs
     print("Sampling inputs...")
     epsilons = set_epsilons(
@@ -141,7 +140,7 @@ def run_one(
     # solve
     print("Solving...")
     options = SolverOptions(
-        strategy="lagrangian_bnp",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=float(1e-4),

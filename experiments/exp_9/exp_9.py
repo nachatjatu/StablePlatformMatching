@@ -9,7 +9,9 @@ import numpy as np
 
 from stable_platform_matchings import InstanceGenerator, Optimizer
 from stable_platform_matchings.domain.instance import Instance
-from stable_platform_matchings.optimization.options import OptimizerParams, SolverOptions
+from stable_platform_matchings.optimization.options import (
+    OptimizerParams, SolverOptions, SolverStrategy
+)
 import stable_platform_matchings.experiments.utils as utils
 
 BASE_SEED = 20260924
@@ -43,7 +45,7 @@ MAX_EPSILON = 6.0
 HET_COST_MEAN = 0.0
 HET_COST_SD = 100_000.0
 
-STRATEGIES = [
+STRATEGIES: list[SolverStrategy] = [
     "paper_bnb",
     "npm_capped",
     "npm_uncapped",

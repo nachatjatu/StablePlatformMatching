@@ -200,7 +200,7 @@ def run_one(
     )
 
     options = SolverOptions(
-        strategy="lagrangian_bnp",
+        strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
         early_stop_threshold=0.0,
