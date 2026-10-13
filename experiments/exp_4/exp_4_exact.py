@@ -203,7 +203,7 @@ def run_one(
         strategy="paper_bnb",
         structured_farmer_payments=False,
         dominance_constraints=False,
-        early_stop_threshold=0.0,
+        early_stop_threshold=1e-4,
         hist_set_method="instance_farmers",
         pay_unmatched=False,
         seed=optimizer_seed,

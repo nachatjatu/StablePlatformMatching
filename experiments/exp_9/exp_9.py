@@ -133,8 +133,7 @@ def run_one(
         },
         # epsilons and het_costs are recorded by each summary (summary.params);
         # farmer quantities and hist sets by its instance_snapshot.
-        "summary_exact": summaries["lagrangian_bnp"],
-        "summary_heuristic": summaries["paper_bnb"],
+        "summary_paper_bnb": summaries["paper_bnb"],
         "summary_npm_capped": summaries["npm_capped"],
         "summary_npm_uncapped": summaries["npm_uncapped"],
     }
