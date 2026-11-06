@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=exp_12
-#SBATCH --array=0-27
+#SBATCH --array=0-31
 #SBATCH --time=24:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
@@ -34,5 +34,5 @@ export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export GUROBI_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
-# Run experiment for this array index (one array task per row of continuous_window_instances.csv)
+# Run experiment for this array index (one array task per row of compact_window_instances.csv)
 python3 experiments/exp_12/exp_12.py $SLURM_ARRAY_TASK_ID

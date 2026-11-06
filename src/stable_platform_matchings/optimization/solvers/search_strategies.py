@@ -307,8 +307,8 @@ def solve_paper_bnb(
         RuntimeError: no primal solution found.
     """
 
-    # start from the root
-    root_branch = Branch(set(), set())
+    # start from the root, with any restrictions passed to Optimizer.solve
+    root_branch = Branch(optimizer.root_forced_match, optimizer.root_forced_unmatch)
     branches_to_evaluate = [root_branch]
     active_branches = []
 

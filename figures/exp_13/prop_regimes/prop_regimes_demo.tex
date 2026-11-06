@@ -1,0 +1,40 @@
+\documentclass{beamer}
+% --- add to your preamble ---
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\definecolor{matchblue}{HTML}{2A78D6}
+\definecolor{dimline}{HTML}{C3C2B7}
+\definecolor{axisgray}{HTML}{898781}
+\definecolor{inkmuted}{HTML}{52514E}
+\definecolor{efffill}{HTML}{D6EBDF}
+\definecolor{inefffill}{HTML}{FBDCCB}
+\pgfplotsset{
+  effband/.style={fill=efffill},
+  ineffband/.style={fill=inefffill},
+  matchline/.style={draw=matchblue, line width=1.6pt, line join=round, mark=none},
+  satline/.style={draw=inkmuted, line width=0.6pt, dashed, mark=none},
+}
+\tikzset{regimelabel/.style={font=\small\bfseries, text=inkmuted}}
+
+% placeholders for the paper's macros (drop these in your deck)
+\providecommand{\opt}{\star}
+\providecommand{\Th}{T_h}
+\providecommand{\effmatchings}{\mathcal{T}^{\mathrm{eff}}}
+\begin{document}
+% --- the frame ---
+\begin{frame}{When does the platform match the high types?}
+  \centering
+  \input{regimes_plot.tex}
+
+  \vspace{0.6em}
+  \small
+  \begin{minipage}[t][2.6em]{0.95\linewidth}\centering
+  \only<1>{Star costs, instance \#1: share of high types matched as $\epsilon_h$ grows.}
+  \only<2>{\textbf{(ii)} $n_h+\epsilon_h\le K$, $\epsilon_h\notin(\epsilon_h^-,\epsilon_h^+)$: optimal matchings are $\effmatchings$, $\Pi^\opt=A-B_\ell$.}
+  \only<3>{\textbf{(iii)} $n_h+\epsilon_h\le K$, $\epsilon_h\in(\epsilon_h^-,\epsilon_h^+)$: $\Th\subseteq T^\opt\notin\effmatchings$, $\Pi^\opt=A-B_h$.}
+  \only<4>{\textbf{(iv)} $n_h+\epsilon_h>K$, $\epsilon_h\le\underline{\epsilon}_h$: optimal matchings are $\effmatchings$, $\Pi^\opt=A-B_\ell$.}
+  \only<5>{\textbf{(v)} $n_h+\epsilon_h>K$, $\epsilon_h>\underline{\epsilon}_h$: $\Th\subseteq T^\opt\notin\effmatchings$, $\Pi^\opt=A-B_h$.}
+  \only<6>{\colorbox{efffill}{efficient: $\Pi^\opt=A-B_\ell$} \quad \colorbox{inefffill}{inefficient: $\Pi^\opt=A-B_h$}}
+  \end{minipage}
+\end{frame}
+\end{document}

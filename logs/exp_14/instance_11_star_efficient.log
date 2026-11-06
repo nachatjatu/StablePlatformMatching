@@ -1,0 +1,62 @@
+Loading instance generator...
+#11 star efficient: 0 saved, 9 to solve (2 threads)
+Set parameter Username
+Set parameter LicenseID to value 2867845
+Academic license - for non-commercial use only - expires 2027-09-25
+Set parameter Threads to value 2
+Set parameter TimeLimit to value 900
+Gurobi Optimizer version 12.0.3 build v12.0.3rc0 (mac64[arm] - Darwin 25.3.0 25D2128)
+
+CPU model: Apple M4 Pro
+Thread count: 14 physical cores, 14 logical processors, using up to 2 threads
+
+Non-default parameters:
+TimeLimit  900
+Threads  2
+
+Optimize a model with 2664 rows, 2352 columns and 7138 nonzeros
+Model fingerprint: 0xb413d3be
+Variable types: 1708 continuous, 644 integer (644 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [5e+00, 8e+05]
+  Bounds range     [1e+00, 1e+00]
+  RHS range        [1e+00, 2e+01]
+Found heuristic solution: objective 2.566533e+07
+Presolve removed 1932 rows and 1694 columns
+Presolve time: 0.00s
+Presolved: 732 rows, 658 columns, 3274 nonzeros
+Variable types: 14 continuous, 644 integer (644 binary)
+
+Root relaxation: objective 1.526533e+07, 823 iterations, 0.01 seconds (0.02 work units)
+
+    Nodes    |    Current Node    |     Objective Bounds      |     Work
+ Expl Unexpl |  Obj  Depth IntInf | Incumbent    BestBd   Gap | It/Node Time
+
+     0     0 1.5265e+07    0  184 2.5665e+07 1.5265e+07  40.5%     -    0s
+H    0     0                    1.766533e+07 1.5265e+07  13.6%     -    0s
+     0     0 infeasible    0      1.7665e+07 1.7665e+07  0.00%     -    0s
+
+Cutting planes:
+  Gomory: 3
+  RLT: 92
+  Relax-and-lift: 1
+
+Explored 1 nodes (1824 simplex iterations) in 0.04 seconds (0.09 work units)
+Thread count was 2 (of 14 available processors)
+
+Solution count 2: 1.76653e+07 2.56653e+07 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 1.766532973481e+07, best bound 1.766532973481e+07, gap 0.0000%
+Gap 17665329.734805208 17665329.734805215
+[#11 star efficient] eps_h=6.400: profit     -120,000, envelope slope   -481,250/ton (28s, 1 saved)
+[#11 star efficient] eps_h=6.600: profit     -213,333, envelope slope   -452,525/ton (27s, 2 saved)
+[#11 star efficient] eps_h=6.800: profit     -301,176, envelope slope   -426,298/ton (28s, 3 saved)
+[#11 star efficient] eps_h=7.000: profit     -384,000, envelope slope   -402,286/ton (33s, 4 saved)
+[#11 star efficient] eps_h=7.200: profit     -452,267, envelope slope          0/ton (42s, 5 saved)
+[#11 star efficient] eps_h=7.400: profit     -452,267, envelope slope          0/ton (38s, 6 saved)
+[#11 star efficient] eps_h=7.600: profit     -452,267, envelope slope          0/ton (28s, 7 saved)
+[#11 star efficient] eps_h=7.800: profit     -452,267, envelope slope          0/ton (31s, 8 saved)
+[#11 star efficient] eps_h=8.000: profit     -452,267, envelope slope         -0/ton (28s, 9 saved)
+Done

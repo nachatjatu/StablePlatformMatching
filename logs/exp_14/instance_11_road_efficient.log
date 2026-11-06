@@ -1,0 +1,137 @@
+Loading instance generator...
+#11 road efficient: 0 saved, 9 to solve (3 threads)
+Set parameter Username
+Set parameter LicenseID to value 2867845
+Academic license - for non-commercial use only - expires 2027-09-25
+Set parameter Threads to value 3
+Set parameter TimeLimit to value 900
+Gurobi Optimizer version 12.0.3 build v12.0.3rc0 (mac64[arm] - Darwin 25.3.0 25D2128)
+
+CPU model: Apple M4 Pro
+Thread count: 14 physical cores, 14 logical processors, using up to 3 threads
+
+Non-default parameters:
+TimeLimit  900
+Threads  3
+
+Optimize a model with 12884 rows, 2660 columns and 27578 nonzeros
+Model fingerprint: 0x1b2e1336
+Variable types: 2016 continuous, 644 integer (644 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [4e+02, 8e+05]
+  Bounds range     [1e+00, 1e+00]
+  RHS range        [1e+00, 2e+01]
+Found heuristic solution: objective 2.033177e+07
+Presolve removed 1708 rows and 1358 columns
+Presolve time: 0.03s
+Presolved: 11176 rows, 1302 columns, 24162 nonzeros
+Variable types: 14 continuous, 1288 integer (1288 binary)
+Root relaxation presolved: 11176 rows, 1302 columns, 24162 nonzeros
+
+
+Root relaxation: objective 3.752123e+06, 3380 iterations, 0.12 seconds (0.29 work units)
+
+    Nodes    |    Current Node    |     Objective Bounds      |     Work
+ Expl Unexpl |  Obj  Depth IntInf | Incumbent    BestBd   Gap | It/Node Time
+
+     0     0 3752123.21    0  552 2.0332e+07 3752123.21  81.5%     -    0s
+     0     0 3772613.15    0  642 2.0332e+07 3772613.15  81.4%     -    0s
+H    0     0                    1.980350e+07 3772613.15  80.9%     -    0s
+H    0     0                    1.167024e+07 3772613.15  67.7%     -    0s
+H    0     0                    1.114072e+07 3772613.15  66.1%     -    0s
+H    0     0                    9567050.4808 3772613.15  60.6%     -    0s
+     0     0 4147430.32    0 1275 9567050.48 4147430.32  56.6%     -    0s
+     0     0 4348697.69    0  816 9567050.48 4348697.69  54.5%     -    0s
+H    0     0                    7813272.4836 4348697.69  44.3%     -    0s
+H    0     0                    7344091.2070 4348697.69  40.8%     -    0s
+H    0     0                    7309501.0089 4348697.69  40.5%     -    0s
+     0     0 4611786.65    0  366 7309501.01 4611786.65  36.9%     -    0s
+     0     0 4611786.65    0  366 7309501.01 4611786.65  36.9%     -    1s
+H    0     0                    7135495.6654 4611786.65  35.4%     -    1s
+H    0     0                    7130026.5753 4611786.65  35.3%     -    1s
+H    0     0                    7110687.9101 4611786.65  35.1%     -    1s
+     0     0 4622558.44    0  365 7110687.91 4622558.44  35.0%     -    1s
+     0     0 4712984.07    0  363 7110687.91 4712984.07  33.7%     -    1s
+H    0     0                    7104536.9226 4715169.37  33.6%     -    1s
+H    0     0                    6999925.9847 4715169.37  32.6%     -    1s
+     0     0 4728431.52    0  453 6999925.98 4728431.52  32.5%     -    1s
+     0     0 4732499.82    0  357 6999925.98 4732499.82  32.4%     -    1s
+     0     0 4732657.47    0  357 6999925.98 4732657.47  32.4%     -    1s
+     0     0 4742320.55    0  356 6999925.98 4742320.55  32.3%     -    1s
+H    0     0                    6889324.6125 4742343.51  31.2%     -    1s
+     0     0 4746431.17    0  353 6889324.61 4746431.17  31.1%     -    1s
+H    0     0                    6869985.9473 4746857.61  30.9%     -    1s
+     0     0 4752597.88    0  353 6869985.95 4752597.88  30.8%     -    1s
+     0     0 4753009.00    0  358 6869985.95 4753009.00  30.8%     -    1s
+     0     0 4760214.19    0  358 6869985.95 4760214.19  30.7%     -    1s
+     0     0 4762807.96    0  358 6869985.95 4762807.96  30.7%     -    1s
+     0     0 4762807.96    0  358 6869985.95 4762807.96  30.7%     -    1s
+     0     0 4766292.39    0  359 6869985.95 4766292.39  30.6%     -    1s
+H    0     0                    6817671.0105 4766815.31  30.1%     -    1s
+H    0     0                    6808843.0649 4766815.31  30.0%     -    1s
+H    0     0                    6768259.7721 4766815.31  29.6%     -    1s
+H    0     0                    6766935.1504 4766815.31  29.6%     -    1s
+H    0     0                    6765010.4500 4766815.31  29.5%     -    1s
+     0     0 4768002.70    0  360 6765010.45 4768002.70  29.5%     -    1s
+H    0     0                    6684601.6468 4768593.10  28.7%     -    1s
+     0     0 4768593.10    0  360 6684601.65 4768593.10  28.7%     -    1s
+     0     0 4769630.64    0  360 6684601.65 4769630.64  28.6%     -    1s
+     0     0 4885559.06    0  363 6684601.65 4885559.06  26.9%     -    1s
+     0     0 4887483.52    0  462 6684601.65 4887483.52  26.9%     -    1s
+     0     0 4887483.52    0  460 6684601.65 4887483.52  26.9%     -    1s
+H    0     0                    6635004.7836 4887483.52  26.3%     -    1s
+     0     0 5181528.91    0  456 6635004.78 5181528.91  21.9%     -    1s
+     0     0 5185895.90    0  457 6635004.78 5185895.90  21.8%     -    1s
+     0     0 5187638.25    0  457 6635004.78 5187638.25  21.8%     -    1s
+     0     0 5189418.09    0  456 6635004.78 5189418.09  21.8%     -    1s
+     0     0 5460580.07    0  360 6635004.78 5460580.07  17.7%     -    1s
+     0     0 5462244.48    0  361 6635004.78 5462244.48  17.7%     -    1s
+     0     0 5482452.85    0  352 6635004.78 5482452.85  17.4%     -    1s
+     0     0 5494627.60    0  348 6635004.78 5494627.60  17.2%     -    1s
+     0     0 5494697.67    0  348 6635004.78 5494697.67  17.2%     -    1s
+     0     0 5504588.05    0  349 6635004.78 5504588.05  17.0%     -    1s
+     0     0 5507000.41    0  327 6635004.78 5507000.41  17.0%     -    1s
+     0     0 5507844.43    0  343 6635004.78 5507844.43  17.0%     -    1s
+     0     0 5508077.48    0  327 6635004.78 5508077.48  17.0%     -    1s
+     0     0 5508948.17    0  321 6635004.78 5508948.17  17.0%     -    1s
+     0     0 5508948.17    0  326 6635004.78 5508948.17  17.0%     -    1s
+     0     0 5510486.02    0  326 6635004.78 5510486.02  16.9%     -    1s
+     0     0 5510487.37    0  326 6635004.78 5510487.37  16.9%     -    1s
+     0     0 5510576.18    0  343 6635004.78 5510576.18  16.9%     -    1s
+     0     0 5510580.75    0  343 6635004.78 5510580.75  16.9%     -    1s
+     0     0 5510663.21    0  327 6635004.78 5510663.21  16.9%     -    1s
+     0     0 5510887.14    0  327 6635004.78 5510887.14  16.9%     -    1s
+     0     2 5510887.14    0  326 6635004.78 5510887.14  16.9%     -    1s
+*   69    57              19    6629532.9023 5724090.16  13.7%  96.7    1s
+*  162    76               8    6625719.2363 6452474.48  2.61%  68.6    2s
+
+Cutting planes:
+  Gomory: 2
+  Implied bound: 1
+  Clique: 2
+  MIR: 20
+  StrongCG: 2
+  Inf proof: 4
+  Zero half: 7
+  RLT: 12
+  Relax-and-lift: 45
+
+Explored 1180 nodes (66217 simplex iterations) in 2.64 seconds (7.91 work units)
+Thread count was 3 (of 14 available processors)
+
+Solution count 10: 6.62572e+06 6.62953e+06 6.635e+06 ... 6.86999e+06
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 6.625719236297e+06, best bound 6.625719236297e+06, gap 0.0000%
+Gap 6625719.236296875 6625719.236296877
+[#11 road efficient] eps_h=6.400: profit      252,567, envelope slope   -542,149/ton (114s, 1 saved)
+[#11 road efficient] eps_h=6.600: profit      147,429, envelope slope   -509,730/ton (98s, 2 saved)
+[#11 road efficient] eps_h=6.800: profit       48,487, envelope slope   -480,133/ton (108s, 3 saved)
+[#11 road efficient] eps_h=7.000: profit      -44,312, envelope slope   -443,017/ton (95s, 4 saved)
+[#11 road efficient] eps_h=7.200: profit     -128,494, envelope slope   -407,120/ton (96s, 5 saved)
+[#11 road efficient] eps_h=7.400: profit     -206,791, envelope slope   -372,735/ton (106s, 6 saved)
+[#11 road efficient] eps_h=7.600: profit     -275,895, envelope slope   -314,390/ton (109s, 7 saved)
+[#11 road efficient] eps_h=7.800: profit     -332,545, envelope slope   -246,309/ton (102s, 8 saved)
+[#11 road efficient] eps_h=8.000: profit     -372,130, envelope slope   -190,371/ton (115s, 9 saved)
+Done

@@ -1,0 +1,104 @@
+Loading instance generator...
+#29 road efficient: 0 saved, 13 to solve (1 threads)
+Set parameter Username
+Set parameter LicenseID to value 2867845
+Academic license - for non-commercial use only - expires 2027-09-25
+Set parameter Threads to value 1
+Set parameter TimeLimit to value 900
+Gurobi Optimizer version 12.0.3 build v12.0.3rc0 (mac64[arm] - Darwin 25.3.0 25D2128)
+
+CPU model: Apple M4 Pro
+Thread count: 14 physical cores, 14 logical processors, using up to 1 threads
+
+Non-default parameters:
+TimeLimit  900
+Threads  1
+
+Optimize a model with 5607 rows, 1935 columns and 12343 nonzeros
+Model fingerprint: 0xa14ea61f
+Variable types: 1530 continuous, 405 integer (405 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [1e+03, 8e+05]
+  Bounds range     [1e+00, 1e+00]
+  RHS range        [1e+00, 1e+01]
+Found heuristic solution: objective 2.013153e+07
+Presolve removed 1155 rows and 1080 columns
+Presolve time: 0.01s
+Presolved: 4452 rows, 855 columns, 10033 nonzeros
+Variable types: 15 continuous, 840 integer (840 binary)
+
+Root relaxation: objective 2.701201e+06, 1324 iterations, 0.03 seconds (0.11 work units)
+
+    Nodes    |    Current Node    |     Objective Bounds      |     Work
+ Expl Unexpl |  Obj  Depth IntInf | Incumbent    BestBd   Gap | It/Node Time
+
+     0     0 2701201.22    0  840 2.0132e+07 2701201.22  86.6%     -    0s
+H    0     0                    1.883907e+07 2701201.22  85.7%     -    0s
+H    0     0                    5700901.9434 2701201.22  52.6%     -    0s
+H    0     0                    4726786.5495 2701201.22  42.9%     -    0s
+H    0     0                    4626751.4356 2701201.22  41.6%     -    0s
+     0     0 3153511.44    0  168 4626751.44 3153511.44  31.8%     -    0s
+     0     0 3153511.44    0  168 4626751.44 3153511.44  31.8%     -    0s
+     0     0 3251607.78    0  167 4626751.44 3251607.78  29.7%     -    0s
+     0     0 3253260.75    0  167 4626751.44 3253260.75  29.7%     -    0s
+     0     0 3299618.44    0  187 4626751.44 3299618.44  28.7%     -    0s
+     0     0 3302370.47    0  164 4626751.44 3302370.47  28.6%     -    0s
+     0     0 3303424.83    0  164 4626751.44 3303424.83  28.6%     -    0s
+     0     0 3304391.40    0  163 4626751.44 3304391.40  28.6%     -    0s
+     0     0 3304963.14    0  164 4626751.44 3304963.14  28.6%     -    0s
+     0     0 3306664.20    0  205 4626751.44 3306664.20  28.5%     -    0s
+     0     0 3308816.56    0  205 4626751.44 3308816.56  28.5%     -    0s
+     0     0 3308816.56    0  205 4626751.44 3308816.56  28.5%     -    0s
+     0     0 3325262.30    0  203 4626751.44 3325262.30  28.1%     -    0s
+     0     0 3325781.81    0  203 4626751.44 3325781.81  28.1%     -    0s
+     0     0 3326082.91    0  203 4626751.44 3326082.91  28.1%     -    0s
+     0     0 3326083.98    0  203 4626751.44 3326083.98  28.1%     -    0s
+     0     0 3377628.98    0  155 4626751.44 3377628.98  27.0%     -    0s
+     0     0 3378515.73    0  204 4626751.44 3378515.73  27.0%     -    0s
+     0     0 3378671.10    0  203 4626751.44 3378671.10  27.0%     -    0s
+     0     0 3396776.02    0  201 4626751.44 3396776.02  26.6%     -    0s
+     0     0 3398127.53    0  201 4626751.44 3398127.53  26.6%     -    0s
+     0     0 3398145.32    0  202 4626751.44 3398145.32  26.6%     -    0s
+     0     0 3409381.42    0  205 4626751.44 3409381.42  26.3%     -    0s
+     0     0 3412312.47    0  206 4626751.44 3412312.47  26.2%     -    0s
+     0     0 3412424.47    0  206 4626751.44 3412424.47  26.2%     -    0s
+     0     0 3415079.74    0  207 4626751.44 3415079.74  26.2%     -    0s
+     0     0 3416266.31    0  207 4626751.44 3416266.31  26.2%     -    0s
+     0     0 3416266.31    0  207 4626751.44 3416266.31  26.2%     -    0s
+     0     0 3421941.51    0  210 4626751.44 3421941.51  26.0%     -    0s
+     0     0 3422846.09    0  211 4626751.44 3422846.09  26.0%     -    0s
+     0     0 3423180.14    0  211 4626751.44 3423180.14  26.0%     -    0s
+     0     0 3676058.02    0  164 4626751.44 3676058.02  20.5%     -    0s
+     0     2 3676106.92    0  164 4626751.44 3676106.92  20.5%     -    0s
+
+Cutting planes:
+  Gomory: 5
+  MIR: 1
+  Flow cover: 6
+  GUB cover: 1
+  RLT: 1
+  Relax-and-lift: 2
+
+Explored 775 nodes (17424 simplex iterations) in 0.95 seconds (1.89 work units)
+Thread count was 1 (of 14 available processors)
+
+Solution count 5: 4.62675e+06 4.72679e+06 5.7009e+06 ... 2.01315e+07
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 4.626751435638e+06, best bound 4.626751435638e+06, gap 0.0000%
+Gap 4626751.435637852 4626751.43563785
+[#29 road efficient] eps_h=6.000: profit     -336,694, envelope slope   -234,358/ton (33s, 1 saved)
+[#29 road efficient] eps_h=6.050: profit     -348,239, envelope slope   -217,721/ton (32s, 2 saved)
+[#29 road efficient] eps_h=6.100: profit     -357,524, envelope slope   -158,995/ton (35s, 3 saved)
+[#29 road efficient] eps_h=6.150: profit     -364,751, envelope slope   -141,493/ton (32s, 4 saved)
+[#29 road efficient] eps_h=6.200: profit     -369,633, envelope slope    -74,407/ton (36s, 5 saved)
+[#29 road efficient] eps_h=6.250: profit     -371,320, envelope slope    -32,518/ton (31s, 6 saved)
+[#29 road efficient] eps_h=6.300: profit     -371,801, envelope slope         -0/ton (31s, 7 saved)
+[#29 road efficient] eps_h=6.350: profit     -371,801, envelope slope          0/ton (37s, 8 saved)
+[#29 road efficient] eps_h=6.400: profit     -371,801, envelope slope          0/ton (35s, 9 saved)
+[#29 road efficient] eps_h=6.450: profit     -371,801, envelope slope          0/ton (32s, 10 saved)
+[#29 road efficient] eps_h=6.500: profit     -371,801, envelope slope         -0/ton (37s, 11 saved)
+[#29 road efficient] eps_h=6.550: profit     -371,801, envelope slope          0/ton (37s, 12 saved)
+[#29 road efficient] eps_h=6.600: profit     -371,801, envelope slope          0/ton (37s, 13 saved)
+Done

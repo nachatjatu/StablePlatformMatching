@@ -53,23 +53,23 @@ SOLVER_OPTIONS = dict(
 
 def load_windows() -> pd.DataFrame:
     """
-    Load the instance parameters (in tons) and derive Prop 3's thresholds.
+    Load the instance parameters and derive Prop 3's thresholds.
 
-    Quantities are in tons and need not be integers: each intermediary's status quo is
-    `farmers_per_*` farmers of `farmer_size_tons` each. Prop 3's thresholds are invariant
-    to the quantity unit, so they are computed directly in tons.
+    Each intermediary's status quo is a whole number of farmers of `farmer_quantity` each
+    (1 for every row of the compact CSV).
     """
     windows = pd.read_csv(INSTANCES_CSV).set_index("instance").sort_index()
-    windows = windows.rename(columns={
-        "K_tons": "K", "n_h_tons": "n_h", "n_l_tons": "n_l", "eps_l_tons": "eps_l",
-        "total_fruit_tons": "F", "farmer_size_tons": "farmer_quantity",
-    })
 
     # status quo quantities must be whole numbers of farmers
-    for typ in ["h", "l"]:
-        n_farmers = windows[f"farmers_per_{'high' if typ == 'h' else 'low'}"]
-        if not np.allclose(n_farmers * windows["farmer_quantity"], windows[f"n_{typ}"]):
-            raise ValueError(f"farmers_per_* x farmer_size_tons does not reproduce n_{typ}_tons")
+    for typ, label in [("h", "high"), ("l", "low")]:
+        windows[f"farmers_per_{label}"] = (windows[f"n_{typ}"] / windows["farmer_quantity"]).round().astype(int)
+        if not np.allclose(windows[f"farmers_per_{label}"] * windows["farmer_quantity"], windows[f"n_{typ}"]):
+            raise ValueError(f"n_{typ} is not a whole number of farmers of farmer_quantity")
+
+    windows["F"] = windows["T_l"] * windows["n_l"] + windows["T_h"] * windows["n_h"]
+    expected = windows["T_l"] * windows["farmers_per_low"] + windows["T_h"] * windows["farmers_per_high"]
+    if not (windows["n_farmers"] == expected).all():
+        raise ValueError("n_farmers does not equal T_l n_l + T_h n_h in farmers")
 
     windows["a"] = windows["n_l"] + windows["eps_l"]
     windows["L"] = windows["K"] - windows["n_h"]
@@ -91,7 +91,7 @@ def load_windows() -> pd.DataFrame:
     # the analytic thresholds must reproduce the CSV's integer regime predictions:
     # regime_unsat covers integers up to L, regime_sat (when given) the integers above L
     for instance_id, row in windows.iterrows():
-        start, end = (int(x) for x in row["eps_h_sweep_tons"].split("-"))
+        start, end = (int(x) for x in row["eps_h_sweep"].split("-"))
         integers = range(start, end + 1)
         unsat = "".join(
             "I" if row["eps_h_minus"] < e < row["eps_h_plus"] else "E"
@@ -140,7 +140,7 @@ def build_instance(
     for intermediary_id in intermediary_ids:
         data = generator.intermediaries[intermediary_id]
 
-        # force status quo quantities: farmers_per_* farmers of farmer_size_tons each
+        # force status quo quantities: farmers_per_* farmers of farmer_quantity tons each
         quantities = [farmer_quantity] * farmers_per["h" if intermediary_id in high_ids else "l"]
 
         farmer_xys = generator.gen_farmer_xys(

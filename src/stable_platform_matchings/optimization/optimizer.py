@@ -14,6 +14,7 @@ from ..reporting.containers import (
     OptimizationResult, 
     BranchPrimalResult, 
     BranchDualResult, 
+    DeviationResult,
     InstanceSummary
 )
 from ..reporting.printer import Printer
@@ -146,6 +147,8 @@ class Optimizer:
         self,
         options: SolverOptions,
         epsilons: Mapping[str, float],
+        forced_match: frozenset[IntermediaryId] | set[IntermediaryId] = frozenset(),
+        forced_unmatch: frozenset[IntermediaryId] | set[IntermediaryId] = frozenset(),
     ) -> InstanceSummary:
         """
         Public entrypoint to run optimization with a given strategy.
@@ -155,12 +158,20 @@ class Optimizer:
         reused across an ambiguity sweep. All solver state is reset here, so a reused
         Optimizer yields the same results as a freshly constructed one.
 
+        `forced_match` and `forced_unmatch` restrict the whole search to matchings that
+        include / exclude those intermediaries (the root branch's restrictions), e.g. to
+        compute the best profit with a given intermediary matched or unmatched. They are
+        supported by the branch-and-bound strategies (`paper_bnb`, `paper_bnb_random`).
+
         Args:
             options (SolverOptions): solver strategy and policy switches.
             epsilons (Mapping[str, float]): maps intermediary ID to ambiguity level.
+            forced_match (frozenset[str] | set[str]): intermediaries every matching must include.
+            forced_unmatch (frozenset[str] | set[str]): intermediaries every matching must exclude.
 
         Raises:
             ValueError: unknown solver strategy.
+            ValueError: unknown, overlapping or unsupported forced restrictions.
             ValueError: optimization fails to find a feasible solution.
 
         Returns:
@@ -169,6 +180,23 @@ class Optimizer:
         """
 
         validate_epsilons(self.instance, epsilons)
+
+        forced_match, forced_unmatch = frozenset(forced_match), frozenset(forced_unmatch)
+        unknown = (forced_match | forced_unmatch) - set(self.intermediary_ids)
+        if unknown:
+            raise ValueError(f"Unknown forced intermediary IDs: {sorted(unknown)}")
+        if forced_match & forced_unmatch:
+            raise ValueError(
+                f"Intermediaries both forced matched and unmatched: {sorted(forced_match & forced_unmatch)}"
+            )
+        if (forced_match or forced_unmatch) and options.strategy not in {"paper_bnb", "paper_bnb_random"}:
+            raise ValueError(f"Forced restrictions are not supported by strategy {options.strategy!r}")
+        self.root_forced_match = forced_match
+        self.root_forced_unmatch = forced_unmatch
+
+        unknown_recorded = set(options.record_deviation_routes) - set(self.intermediary_ids)
+        if unknown_recorded:
+            raise ValueError(f"Unknown record_deviation_routes IDs: {sorted(unknown_recorded)}")
 
         self.options = options
         self.epsilons = epsilons
@@ -455,14 +483,20 @@ class Optimizer:
 
         # constraint 7: constrain kappa to be the max deviation
         #   opportunity from historical set (for subset)
+        # cuts kept per route for SolverOptions.record_deviation_routes
+        route_cuts: dict[frozenset[str], tuple[Route, dict[tuple[str, int], gp.Constr]]] = {}
         for route in self.route_by_farmer_ids_set:
-            self._add_stability_cuts_for_route(
-                model, eta, kappa, farmer_payment_vars, self.route_by_farmer_ids_set[route]
+            route_cuts[route] = (
+                self.route_by_farmer_ids_set[route],
+                self._add_stability_cuts_for_route(
+                    model, eta, kappa, farmer_payment_vars, self.route_by_farmer_ids_set[route]
+                ),
             )
 
         # constraint 8: payment must be >= avg worst-case deviation
         #   opportunity from hist set + robust premium
         epsilons = self.epsilons
+        stability_constrs = {}
         for intermediary in self.instance.intermediaries:
             # note that constraint 7 makes kappa equal to max deviation
             #   opportunity from historical set
@@ -471,11 +505,11 @@ class Optimizer:
                 1
                 / n_hist_sets
                 * gp.quicksum(
-                    kappa[intermediary.id, hist_set_index] 
+                    kappa[intermediary.id, hist_set_index]
                     for hist_set_index in range(n_hist_sets)
                 )
             )
-            model.addConstr(
+            stability_constrs[intermediary.id] = model.addConstr(
                 intermediary_profit_vars[intermediary.id]
                 >= avg_deviation_payoff + eta[intermediary.id] * epsilons[intermediary.id],
                 f"stability_{intermediary.id}",
@@ -621,8 +655,11 @@ class Optimizer:
                             and farmer_ids_set not in self.route_by_farmer_ids_set 
                         ):
                             start_time = time.time()
-                            self._add_stability_cuts_for_route(
-                                model, eta, kappa, farmer_payment_vars, route
+                            route_cuts[farmer_ids_set] = (
+                                route,
+                                self._add_stability_cuts_for_route(
+                                    model, eta, kappa, farmer_payment_vars, route
+                                ),
                             )
                             new_rows += 1
                             self.time_usage["adding_constraints_found"] += time.time() - start_time
@@ -714,12 +751,21 @@ class Optimizer:
         )
 
         primary_result = _extract_result(
-            model=model, 
-            platform_profit=platform_profit, 
-            payment_per_quantity=payment_per_quantity, 
-            paved_distance_penalty=paved_distance_penalty, 
+            model=model,
+            platform_profit=platform_profit,
+            payment_per_quantity=payment_per_quantity,
+            paved_distance_penalty=paved_distance_penalty,
             dirt_distance_penalty=dirt_distance_penalty
         )
+        # duals of the primary solve, read before the welfare re-optimizations change the model
+        primary_result.eta = {intermediary_id: eta[intermediary_id].X for intermediary_id in self.intermediary_ids}
+        primary_result.stability_duals = {
+            intermediary_id: constr.Pi for intermediary_id, constr in stability_constrs.items()
+        }
+        if self.options.record_deviation_routes:
+            primary_result.deviation_routes = self._deviation_routes_from_duals(
+                route_cuts, farmer_payment_vars
+            )
 
         if not compute_intermediary_welfare and not compute_farmer_welfare:
             return BranchPrimalResult(
@@ -1108,6 +1154,164 @@ class Optimizer:
     def exceeds_global_lb(self, value: float, tolerance: float) -> bool:
         return value > self.best_lb + tolerance
 
+    def worst_case_deviation(
+        self,
+        intermediary_id: str,
+        farmer_payments: Mapping[str, float],
+        epsilon: float,
+        hist_set_method: str = "instance_farmers",
+        max_rounds: int = 200,
+    ) -> DeviationResult:
+        """
+        Worst-case expected deviation profit of one intermediary at fixed farmer payments.
+
+        Evaluates the right-hand side of stability constraint 8 for `intermediary_id` with
+        the farmer payments held fixed: minimize mean(kappa) + eta * epsilon subject to the
+        same stability cuts, route oracle, and separation rule the platform solve uses
+        (`_add_stability_cuts_for_route`, `tsp_solver`, and the prizes and `CUT_TOL` of
+        `add_violated_stability_cuts`). By LP duality this is the intermediary's worst-case
+        expected deviation profit (1) under the Wasserstein ambiguity set, `eta` is the dual
+        price of the ambiguity budget, and the duals of the binding cuts give the
+        worst-case distribution over deviation routes.
+
+        Does not change the optimizer's state: the active historical sets are restored
+        afterwards, so this can be called before or after `solve()`.
+
+        Args:
+            intermediary_id (str): the deviating intermediary.
+            farmer_payments (Mapping[str, float]): payment to every farmer, e.g. from a saved
+                solution's `farmer_payments`.
+            epsilon (float): the intermediary's ambiguity level.
+            hist_set_method (str, optional): historical-set construction, as in
+                `SolverOptions.hist_set_method`. Defaults to "instance_farmers".
+            max_rounds (int, optional): cap on separation rounds. Defaults to 200.
+
+        Raises:
+            ValueError: unknown intermediary, missing farmer payments, or negative epsilon.
+            RuntimeError: separation did not converge within `max_rounds`.
+
+        Returns:
+            DeviationResult: deviation profit, eta, kappa, and the worst-case routes.
+        """
+        if intermediary_id not in self.intermediary_ids:
+            raise ValueError(f"Unknown intermediary {intermediary_id!r}.")
+        missing = set(self.farmer_ids) - set(farmer_payments)
+        if missing:
+            raise ValueError(f"Missing payments for farmers: {sorted(missing)}")
+        if epsilon < 0:
+            raise ValueError(f"epsilon must be nonnegative, got {epsilon}.")
+
+        previous_hist_sets = getattr(self, "active_hist_sets", None)
+        self._configure_hist_sets(hist_set_method)
+        try:
+            hist_sets = self.active_hist_sets[intermediary_id]
+            n_sets = len(hist_sets)
+            price = self.instance.fruit_price_per_ton
+
+            with gp.Env(params={"OutputFlag": 0}) as env, gp.Model(env=env) as model:
+                model.setParam("Threads", self.params.threads)
+                fixed = [farmer_payments[farmer_id] for farmer_id in self.farmer_ids]
+                # fix farmer payments
+                farmer_payment_vars = model.addVars(self.farmer_ids, lb=fixed, ub=fixed)
+                eta = model.addVars(self.intermediary_ids, lb=0.0)
+                kappa = model.addVars(
+                    [
+                        (intermediary.id, k)
+                        for intermediary in self.instance.intermediaries
+                        for k in range(len(self.active_hist_sets[intermediary.id]))
+                    ],
+                    lb=-float("inf"),
+                )
+                model.setObjective(
+                    gp.quicksum(kappa[intermediary_id, k] for k in range(n_sets)) / n_sets
+                    + eta[intermediary_id] * epsilon,
+                    gp.GRB.MINIMIZE,
+                )
+
+                # this intermediary's cut for each (route, historical set)
+                own_cuts: dict[frozenset[str], tuple[Route, list[gp.Constr]]] = {}
+
+                def add_route(route: Route) -> bool:
+                    farmer_ids_set = frozenset(farmer.id for farmer in route.farmers)
+                    if not farmer_ids_set or farmer_ids_set in own_cuts:
+                        return False
+                    model.update()
+                    n_before = model.NumConstrs
+                    self._add_stability_cuts_for_route(
+                        model, eta, kappa, farmer_payment_vars, route
+                    )
+                    model.update()
+                    new_cuts = model.getConstrs()[n_before:]
+                    # one cut per (intermediary, historical set), in instance order
+                    offset = 0
+                    for intermediary in self.instance.intermediaries:
+                        n = len(self.active_hist_sets[intermediary.id])
+                        if intermediary.id == intermediary_id:
+                            own_cuts[farmer_ids_set] = (route, new_cuts[offset:offset + n])
+                        offset += n
+                    return True
+
+                def separate(eta_value: float, hist_set: frozenset[str]) -> list[tuple[Route, float]]:
+                    # the prizes of add_violated_stability_cuts
+                    prizes = {
+                        farmer.id: farmer.quantity * price
+                        - farmer_payments[farmer.id]
+                        - eta_value * (farmer.quantity if farmer.id not in hist_set else 0.0)
+                        for farmer in self.instance.farmers
+                    }
+                    routes, objs = self.tsp_solver.solve(prizes)
+                    return list(zip(routes, objs, strict=True))
+
+                # seed: each status-quo route (uses no budget) and the oracle's routes at eta = 0
+                for hist_set in hist_sets:
+                    if hist_set:
+                        add_route(self.instance.calculate_tree_path(sorted(hist_set)))
+                    for route, _ in separate(0.0, hist_set):
+                        add_route(route)
+
+                for _ in range(max_rounds):
+                    model.optimize()
+                    self._require_solution(model, "Worst-case deviation solve")
+                    eta_value = eta[intermediary_id].X
+                    added = 0
+                    for k, hist_set in enumerate(hist_sets):
+                        kappa_value = kappa[intermediary_id, k].X
+                        for route, obj in separate(eta_value, hist_set):
+                            violation = obj - kappa_value - self.het_costs[intermediary_id]
+                            if violation > Optimizer.CUT_TOL and add_route(route):
+                                added += 1
+                    if not added:
+                        break
+                else:
+                    raise RuntimeError(
+                        f"Worst-case deviation for {intermediary_id} did not converge "
+                        f"within {max_rounds} separation rounds."
+                    )
+
+                # duals of the cuts give the worst-case distribution, which carries
+                # weight 1/n_sets per historical set in the objective
+                routes = []
+                for route, cuts in own_cuts.values():
+                    for k, cut in enumerate(cuts):
+                        probability = -cut.Pi * n_sets
+                        if probability > 1e-9:
+                            routes.append((k, route, probability))
+
+                return DeviationResult(
+                    intermediary_id=intermediary_id,
+                    epsilon=epsilon,
+                    profit=model.ObjVal,
+                    eta=eta[intermediary_id].X,
+                    kappa=tuple(kappa[intermediary_id, k].X for k in range(n_sets)),
+                    routes=tuple(sorted(routes, key=lambda r: (r[0], -r[2]))),
+                    n_routes_generated=len(own_cuts),
+                )
+        finally:
+            if previous_hist_sets is None:
+                del self.active_hist_sets
+            else:
+                self.active_hist_sets = previous_hist_sets
+
     def record_summary(self) -> None:
         elapsed = time.time() - self.instance_summary.start_time
 
@@ -1129,6 +1333,50 @@ class Optimizer:
             self.total_oracle_calls
         )
 
+    def _deviation_routes_from_duals(
+        self,
+        route_cuts: dict[frozenset[str], tuple[Route, dict[tuple[str, int], gp.Constr]]],
+        farmer_payment_vars: gp.tupledict,
+    ) -> dict[str, list[dict[str, object]]]:
+        """
+        Worst-case deviation distribution of each `record_deviation_routes` intermediary.
+
+        At the optimum of the primal, the duals of an intermediary's stability cuts are
+        proportional to its worst-case distribution over deviation routes (the same
+        distribution `worst_case_deviation` returns at the solution's payments). They are
+        normalized to sum to one within each historical set; an intermediary whose cuts all
+        have zero dual (its stability constraint does not bind) gets an empty list.
+        """
+        payments = {farmer_id: farmer_payment_vars[farmer_id].X for farmer_id in self.farmer_ids}
+        records: dict[str, list[dict[str, object]]] = {}
+        for intermediary_id in self.options.record_deviation_routes:
+            entries = []
+            for hist_set_idx, hist_set in enumerate(self.active_hist_sets[intermediary_id]):
+                duals = [
+                    (route, abs(cuts[intermediary_id, hist_set_idx].Pi))
+                    for route, cuts in route_cuts.values()
+                ]
+                total = sum(dual for _, dual in duals)
+                if total <= 1e-12:
+                    continue
+                for route, dual in duals:
+                    weight = dual / total
+                    if weight <= 1e-9:
+                        continue
+                    entries.append({
+                        "hist_set": hist_set_idx,
+                        "weight": weight,
+                        "farmers": sorted(farmer.id for farmer in route.farmers),
+                        "outside_quantity": sum(
+                            farmer.quantity for farmer in route.farmers if farmer.id not in hist_set
+                        ),
+                        "route_cost": route.cost - self.instance.truck_fixed_cost,
+                        "value": route.value - self.het_costs[intermediary_id]
+                        - sum(payments[farmer.id] for farmer in route.farmers),
+                    })
+            records[intermediary_id] = sorted(entries, key=lambda e: (e["hist_set"], -e["weight"]))
+        return records
+
     def _add_stability_cuts_for_route(
         self,
         model: gp.Model,
@@ -1136,7 +1384,7 @@ class Optimizer:
         kappa: gp.tupledict,
         farmer_payment_vars: gp.tupledict,
         route: Route
-    ) -> None:
+    ) -> dict[tuple[str, int], gp.Constr]:
         """Add stability cuts to the primal model for a given route.
 
         Each intermediary's constraints are augmented to prevent profitable
@@ -1150,8 +1398,9 @@ class Optimizer:
             route: route whose stability cut is being added.
 
         Returns:
-            None
+            dict[tuple[str, int], gp.Constr]: the cut added for each (intermediary, hist_set_index).
         """
+        cuts = {}
         for intermediary in self.instance.intermediaries:
             # add stability cuts for each historical set to prevent deviations
             for hist_set_idx, hist_set in enumerate(self.active_hist_sets[intermediary.id]):
@@ -1171,7 +1420,8 @@ class Optimizer:
                     - eta[intermediary.id] * total_quantity_outside_hist_set
                     - kappa[intermediary.id, hist_set_idx]
                 )
-                model.addConstr(cut_lhs <= 0)
+                cuts[intermediary.id, hist_set_idx] = model.addConstr(cut_lhs <= 0)
+        return cuts
 
     def intermediary_set_cost(self, intermediary_set: frozenset[str]) -> float | None:
         """Compute the transportation cost of matching exactly a given set.

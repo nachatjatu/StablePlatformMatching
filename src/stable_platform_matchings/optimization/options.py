@@ -140,10 +140,18 @@ class SolverOptions:
     hist_set_method: str = "instance_farmers"
     pay_unmatched: bool = False
     stabilize_final_solution: bool = True
+    # intermediaries whose worst-case deviation route mix (the duals of their stability
+    # cuts) is recorded on each primary result; empty records nothing
+    record_deviation_routes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:
             raise TypeError(f"seed must be int, got {type(self.seed).__name__}")
+
+        if not isinstance(self.record_deviation_routes, tuple) or not all(
+            type(intermediary_id) is str for intermediary_id in self.record_deviation_routes
+        ):
+            raise TypeError("record_deviation_routes must be a tuple of intermediary IDs")
         
         if type(self.strategy) is not str:
             raise TypeError(f"strategy must be str, got {type(self.strategy).__name__}")

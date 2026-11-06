@@ -33,6 +33,8 @@ class OptimizerProtocol(Protocol):
     # set per solve, not at construction
     epsilons: Mapping[str, float]
     status_quo_quantities: dict[str, float]
+    root_forced_match: frozenset[str]
+    root_forced_unmatch: frozenset[str]
 
 
     rng: np.random.Generator | None

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Mapping, TypeAlias
 
 if TYPE_CHECKING:
+    from ..domain.route import Route
     from ..optimization.branch import Branch
     from ..optimization.options import OptimizerParams
 
@@ -39,6 +40,17 @@ class OptimizationResult:
     payment_per_quantity: float | None = None
     paved_distance_penalty: float | None = None
     dirt_distance_penalty: float | None = None
+
+    # primary solve only: each intermediary's eta (dual price of its ambiguity budget) and
+    # the dual of its stability constraint 8. By the envelope theorem, the platform profit's
+    # derivative in epsilon_t is stability_duals[t] * eta[t]
+    eta: dict[str, float] | None = None
+    stability_duals: dict[str, float] | None = None
+    # primary solve, only for SolverOptions.record_deviation_routes: each recorded intermediary's
+    # worst-case deviation distribution, from the duals of its stability cuts (normalized to sum
+    # to one within each historical set). Each entry: hist_set, weight, farmers, outside_quantity,
+    # route_cost (net of the truck fixed cost), and value (route value net of het cost and payments)
+    deviation_routes: dict[str, list[dict[str, object]]] | None = None
 
     INTEGRALITY_TOL: float = field(
         default=1e-9,
@@ -106,6 +118,9 @@ class OptimizationResult:
             "payment_per_quantity": self.payment_per_quantity,
             "paved_distance_penalty": self.paved_distance_penalty,
             "dirt_distance_penalty": self.dirt_distance_penalty,
+            "eta": self.eta,
+            "stability_duals": self.stability_duals,
+            "deviation_routes": self.deviation_routes,
         }
 
 @dataclass
@@ -151,6 +166,24 @@ class BranchPrimalResult:
 class BranchDualResult:
     objective_value: float
     n_added_columns: int
+
+@dataclass(frozen=True)
+class DeviationResult:
+    """Worst-case deviation of one intermediary at fixed farmer payments.
+
+    `profit` is the intermediary's worst-case expected deviation profit, i.e. the
+    right-hand side of stability constraint 8, mean(kappa) + eta * epsilon. `eta` is the
+    dual price of the ambiguity budget (the value of one more unit of epsilon). `routes`
+    is the worst-case distribution over deviation routes, as (historical set index,
+    route, probability) triples; probabilities sum to one within each historical set.
+    """
+    intermediary_id: str
+    epsilon: float
+    profit: float
+    eta: float
+    kappa: tuple[float, ...]
+    routes: tuple[tuple[int, Route, float], ...]
+    n_routes_generated: int
 
 @dataclass
 class InstanceSummary:

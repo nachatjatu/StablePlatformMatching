@@ -304,6 +304,7 @@ class RoadGraph:
             options = {}
         figsize = options.get("figsize", (6, 6))  # default figsize
         save_path = options.get("save_path", None)  # default to not saving
+        transparent = options.get("transparent", False)
 
         # set up plot and axis
         _, ax = plt.subplots(figsize=figsize)
@@ -376,9 +377,9 @@ class RoadGraph:
         # tighten the layout
         plt.tight_layout()
 
-        # save to PDF if save_path is provided
+        # save if save_path is provided
         if save_path:
-            plt.savefig(save_path, bbox_inches="tight")
+            plt.savefig(save_path, bbox_inches="tight", transparent=transparent)
 
         plt.show()
 
